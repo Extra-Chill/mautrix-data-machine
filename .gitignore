@@ -1,0 +1,13 @@
+/mautrix-datamachine
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+.idea/
+.vscode/
+data/
+config.yaml
+registration.yaml

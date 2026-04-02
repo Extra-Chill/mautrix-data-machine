@@ -166,6 +166,45 @@ func (d *DataMachineLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error
 	}
 }
 
+func (d *DataMachineLogin) exchangeAuthorizationCode(ctx context.Context, code string) (*TokenExchangeResponse, error) {
+	payload := map[string]string{
+		"code":          code,
+		"code_verifier": d.pkce.CodeVerifier,
+		"redirect_uri":  d.pkce.CallbackURL,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	url := strings.TrimRight(d.pkce.SiteURL, "/") + "/wp-json/chat-bridge/v1/token"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := httpClientWithTimeout(d.Main.Config.RequestTimeout)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("token exchange returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var tokenResp TokenExchangeResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to decode token response: %w", err)
+	}
+
+	return &tokenResp, nil
+}
+
 func (d *DataMachineLogin) buildAuthorizeURL(siteURL, callbackURL, verifier, state string) (string, error) {
 	base := strings.TrimRight(siteURL, "/") + "/wp-json/datamachine/v1/agent/authorize"
 	params := url.Values{}

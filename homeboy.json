@@ -1,0 +1,13 @@
+{
+  "id": "mautrix-data-machine",
+  "changelog_target": "docs/CHANGELOG.md",
+  "extensions": {
+    "go": {}
+  },
+  "version_targets": [
+    {
+      "file": "component.json",
+      "pattern": "\"version\":\\s*\"([0-9.]+)\""
+    }
+  ]
+}

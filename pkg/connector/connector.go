@@ -8,8 +8,9 @@ import (
 )
 
 type DataMachineConnector struct {
-	br     *bridgev2.Bridge
-	Config Config
+	br             *bridgev2.Bridge
+	Config         Config
+	callbackServer *CallbackServer
 }
 
 var (
@@ -18,12 +19,12 @@ var (
 
 func (dc *DataMachineConnector) Init(bridge *bridgev2.Bridge) {
 	dc.br = bridge
+	dc.callbackServer = NewCallbackServer(dc)
 	bridge.Config.PersonalFilteringSpaces = false
 }
 
 func (dc *DataMachineConnector) Start(ctx context.Context) error {
-	// No global startup actions needed; per-login connections start in LoadUserLogin/Connect.
-	return nil
+	return dc.callbackServer.Start(ctx)
 }
 
 func (dc *DataMachineConnector) GetName() bridgev2.BridgeName {
@@ -70,7 +71,32 @@ func (dc *DataMachineConnector) LoadUserLogin(_ context.Context, login *bridgev2
 
 // UserLoginMeta stores per-login metadata in the bridge database.
 type UserLoginMeta struct {
-	SiteURL    string `json:"site_url"`
-	AgentSlug  string `json:"agent_slug"`
-	AgentToken string `json:"agent_token"`
+	SiteURL     string            `json:"site_url"`
+	AgentSlug   string            `json:"agent_slug"`
+	AgentName   string            `json:"agent_name,omitempty"`
+	AgentToken  string            `json:"agent_token"`
+	SessionIDs  map[string]string `json:"session_ids,omitempty"`
+}
+
+func (m *UserLoginMeta) RememberSessionID(portalKey, sessionID string) {
+	if m.SessionIDs == nil {
+		m.SessionIDs = make(map[string]string)
+	}
+	m.SessionIDs[portalKey] = sessionID
+}
+
+func (m *UserLoginMeta) SessionIDForPortal(portalKey string) string {
+	if m.SessionIDs == nil {
+		return ""
+	}
+	return m.SessionIDs[portalKey]
+}
+
+func (m *UserLoginMeta) HasSessionID(sessionID string) bool {
+	for _, known := range m.SessionIDs {
+		if known == sessionID {
+			return true
+		}
+	}
+	return false
 }

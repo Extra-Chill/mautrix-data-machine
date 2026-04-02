@@ -2,15 +2,21 @@
 # Available variables: .Name, .Slug, .SiteURL
 displayname_template: "{{.Name}}"
 
+# Default WordPress site URL shown during login.
+# The browser login flow will authorize the configured agent slug on this site.
+default_site_url: "https://studio.extrachill.com"
+
+# Agent slug to authorize through the browser flow.
+agent_slug: "roadie"
+
 # How often to poll WordPress for pending messages (default: 5s).
 poll_interval: 5s
 
 # Timeout for HTTP requests to the WordPress site (default: 30s).
 request_timeout: 30s
 
-# Optional callback URL for webhook push delivery.
-# If set, WordPress will POST agent responses to this URL.
-# Falls back to polling if not configured.
+# Public callback URL for both webhook delivery and PKCE browser login.
+# This exact URL must be allowed in the agent's allowed_redirect_uris config.
 # callback_url: "https://your-bridge.example.com:29340/callback"
 
 # Port for the callback listener (default: 29340).

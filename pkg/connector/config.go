@@ -17,8 +17,12 @@ type Config struct {
 	RequestTimeout time.Duration `yaml:"request_timeout"`
 	// Displayname template for Data Machine agents.
 	DisplaynameTemplate string `yaml:"displayname_template"`
+	// Default site URL shown in login prompts.
+	DefaultSiteURL string `yaml:"default_site_url"`
+	// Agent slug to authorize via browser login.
+	AgentSlug string `yaml:"agent_slug"`
 	// Callback URL where the bridge listens for webhook pushes from WordPress.
-	// If empty, only polling is used.
+	// Also used as the PKCE redirect URI.
 	CallbackURL string `yaml:"callback_url"`
 	// Port for the callback listener (if callback_url is set).
 	CallbackPort int `yaml:"callback_port"`
@@ -40,6 +44,12 @@ func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	if c.DisplaynameTemplate == "" {
 		c.DisplaynameTemplate = "{{.Name}}"
 	}
+	if c.AgentSlug == "" {
+		c.AgentSlug = "roadie"
+	}
+	if c.CallbackPort == 0 {
+		c.CallbackPort = 29340
+	}
 	return nil
 }
 
@@ -51,6 +61,8 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "displayname_template")
 	helper.Copy(up.Str, "poll_interval")
 	helper.Copy(up.Str, "request_timeout")
+	helper.Copy(up.Str, "default_site_url")
+	helper.Copy(up.Str, "agent_slug")
 	helper.Copy(up.Str, "callback_url")
 	helper.Copy(up.Int, "callback_port")
 }

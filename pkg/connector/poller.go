@@ -10,8 +10,6 @@ import (
 	"maunium.net/go/mautrix/event"
 )
 
-// startPolling begins the polling loop for pending agent messages from WordPress.
-// It runs in the background and emits RemoteMessage events into the bridge.
 func (dmc *DataMachineClient) startPolling() {
 	ctx, cancel := context.WithCancel(context.Background())
 	dmc.pollCancel = cancel
@@ -25,7 +23,6 @@ func (dmc *DataMachineClient) startPolling() {
 	}
 
 	log.Info().Dur("interval", pollInterval).Msg("Starting poll loop")
-
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
@@ -58,17 +55,17 @@ func (dmc *DataMachineClient) pollOnce(ctx context.Context) {
 	var ackIDs []string
 	for _, msg := range messages {
 		remoteEvent := &DataMachineRemoteMessage{
-			id:        networkid.MessageID(msg.ID),
-			text:      msg.Message,
+			portalKey: dmc.Main.ResolvePortalKey(msg.AgentSlug, dmc.UserLogin.ID),
+			id:        networkid.MessageID(msg.QueueID),
+			text:      msg.Content,
 			agentSlug: msg.AgentSlug,
-			timestamp: time.Unix(msg.Timestamp, 0),
-			sender: EventSenderForAgent(msg.AgentSlug, dmc),
+			timestamp: msg.Time(),
+			sender:    EventSenderForAgent(msg.AgentSlug, dmc),
 		}
 		dmc.Main.br.QueueRemoteEvent(dmc.UserLogin, remoteEvent)
-		ackIDs = append(ackIDs, msg.ID)
+		ackIDs = append(ackIDs, msg.QueueID)
 	}
 
-	// Acknowledge the messages so WordPress doesn't re-deliver them.
 	if len(ackIDs) > 0 {
 		if err := dmc.AckPendingMessages(ctx, ackIDs); err != nil {
 			log.Warn().Err(err).Msg("Failed to ack pending messages")
@@ -76,7 +73,6 @@ func (dmc *DataMachineClient) pollOnce(ctx context.Context) {
 	}
 }
 
-// EventSenderForAgent returns an EventSender for the given agent slug.
 func EventSenderForAgent(agentSlug string, dmc *DataMachineClient) bridgev2.EventSender {
 	return bridgev2.EventSender{
 		IsFromMe:    false,
@@ -85,8 +81,8 @@ func EventSenderForAgent(agentSlug string, dmc *DataMachineClient) bridgev2.Even
 	}
 }
 
-// DataMachineRemoteMessage implements bridgev2.RemoteMessage for incoming agent responses.
 type DataMachineRemoteMessage struct {
+	portalKey networkid.PortalKey
 	id        networkid.MessageID
 	text      string
 	agentSlug string
@@ -94,48 +90,17 @@ type DataMachineRemoteMessage struct {
 	sender    bridgev2.EventSender
 }
 
-var (
-	_ bridgev2.RemoteMessage         = (*DataMachineRemoteMessage)(nil)
-	_ bridgev2.RemoteEventWithTimestamp = (*DataMachineRemoteMessage)(nil)
-)
+var _ bridgev2.RemoteMessage = (*DataMachineRemoteMessage)(nil)
+var _ bridgev2.RemoteEventWithTimestamp = (*DataMachineRemoteMessage)(nil)
 
-func (m *DataMachineRemoteMessage) GetType() bridgev2.RemoteEventType {
-	return bridgev2.RemoteEventMessage
-}
-
-func (m *DataMachineRemoteMessage) GetPortalKey() networkid.PortalKey {
-	return networkid.PortalKey{
-		ID: networkid.PortalID("dm:" + m.agentSlug),
-	}
-}
-
+func (m *DataMachineRemoteMessage) GetType() bridgev2.RemoteEventType { return bridgev2.RemoteEventMessage }
+func (m *DataMachineRemoteMessage) GetPortalKey() networkid.PortalKey { return m.portalKey }
 func (m *DataMachineRemoteMessage) AddLogContext(c zerolog.Context) zerolog.Context {
 	return c.Str("message_id", string(m.id)).Str("agent", m.agentSlug)
 }
-
-func (m *DataMachineRemoteMessage) GetSender() bridgev2.EventSender {
-	return m.sender
-}
-
-func (m *DataMachineRemoteMessage) GetID() networkid.MessageID {
-	return m.id
-}
-
-func (m *DataMachineRemoteMessage) GetTimestamp() time.Time {
-	return m.timestamp
-}
-
+func (m *DataMachineRemoteMessage) GetSender() bridgev2.EventSender { return m.sender }
+func (m *DataMachineRemoteMessage) GetID() networkid.MessageID       { return m.id }
+func (m *DataMachineRemoteMessage) GetTimestamp() time.Time          { return m.timestamp }
 func (m *DataMachineRemoteMessage) ConvertMessage(_ context.Context, _ *bridgev2.Portal, _ bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {
-	return &bridgev2.ConvertedMessage{
-		Parts: []*bridgev2.ConvertedMessagePart{
-			{
-				ID:   "part0",
-				Type: event.EventMessage,
-				Content: &event.MessageEventContent{
-					MsgType: event.MsgText,
-					Body:    m.text,
-				},
-			},
-		},
-	}, nil
+	return &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{ID: "part0", Type: event.EventMessage, Content: &event.MessageEventContent{MsgType: event.MsgText, Body: m.text}}}}, nil
 }

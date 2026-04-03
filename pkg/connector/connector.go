@@ -71,11 +71,13 @@ func (dc *DataMachineConnector) LoadUserLogin(_ context.Context, login *bridgev2
 
 // UserLoginMeta stores per-login metadata in the bridge database.
 type UserLoginMeta struct {
-	SiteURL     string            `json:"site_url"`
-	AgentSlug   string            `json:"agent_slug"`
-	AgentName   string            `json:"agent_name,omitempty"`
-	AgentToken  string            `json:"agent_token"`
-	SessionIDs  map[string]string `json:"session_ids,omitempty"`
+	SiteURL    string            `json:"site_url"`
+	AgentSlug  string            `json:"agent_slug"`
+	AgentName  string            `json:"agent_name,omitempty"`
+	AgentToken string            `json:"agent_token"`
+	SessionIDs map[string]string `json:"session_ids,omitempty"`
+	// Onboarding metadata from WordPress, cached at connect time.
+	Onboarding *OnboardingData `json:"onboarding,omitempty"`
 }
 
 func (m *UserLoginMeta) RememberSessionID(portalKey, sessionID string) {

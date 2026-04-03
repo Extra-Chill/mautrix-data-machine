@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -23,7 +24,7 @@ const LoginStepIDComplete = "fi.mau.datamachine.login.complete"
 func (dc *DataMachineConnector) GetLoginFlows() []bridgev2.LoginFlow {
 	return []bridgev2.LoginFlow{{
 		Name:        "Browser authorization",
-		Description: "Sign in to Extra Chill and authorize Roadie in your browser",
+		Description: "Sign in to your WordPress site and authorize the agent in your browser",
 		ID:          LoginFlowIDBrowser,
 	}}
 }
@@ -39,8 +40,9 @@ type DataMachineLogin struct {
 	User *bridgev2.User
 	Main *DataMachineConnector
 
-	siteURL string
-	pkce    *PKCELoginState
+	siteURL    string
+	pkce       *PKCELoginState
+	onboarding *OnboardingData
 }
 
 var _ bridgev2.LoginProcessUserInput = (*DataMachineLogin)(nil)
@@ -51,13 +53,13 @@ func (d *DataMachineLogin) Start(_ context.Context) (*bridgev2.LoginStep, error)
 	return &bridgev2.LoginStep{
 		Type:   bridgev2.LoginStepTypeUserInput,
 		StepID: LoginStepIDSiteURL,
-		Instructions: "Enter the Extra Chill site URL where Roadie is available.",
+		Instructions: "Enter the WordPress site URL where the agent is available.",
 		UserInputParams: &bridgev2.LoginUserInputParams{
 			Fields: []bridgev2.LoginInputDataField{{
 				Type:         bridgev2.LoginInputFieldTypeURL,
 				ID:           "site_url",
 				Name:         "Site URL",
-				Description:  "For Extra Chill this is usually https://studio.extrachill.com",
+				Description:  "The WordPress site URL (e.g., https://studio.extrachill.com)",
 				DefaultValue: defaultSiteURL,
 				Pattern:      "^https?://.+$",
 			}},
@@ -67,7 +69,7 @@ func (d *DataMachineLogin) Start(_ context.Context) (*bridgev2.LoginStep, error)
 
 func (d *DataMachineLogin) Cancel() {}
 
-func (d *DataMachineLogin) SubmitUserInput(_ context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
+func (d *DataMachineLogin) SubmitUserInput(ctx context.Context, input map[string]string) (*bridgev2.LoginStep, error) {
 	siteURL := normalizeBaseURL(input["site_url"])
 	if siteURL == "" {
 		return nil, fmt.Errorf("site URL is required")
@@ -88,6 +90,14 @@ func (d *DataMachineLogin) SubmitUserInput(_ context.Context, input map[string]s
 	}
 
 	d.siteURL = siteURL
+
+	// Fetch onboarding metadata before showing the QR code.
+	// This populates login instructions and agent display info from WordPress.
+	onboarding, err := fetchOnboarding(ctx, siteURL, d.Main.Config.AgentSlug, d.Main.Config.RequestTimeout)
+	if err == nil && onboarding != nil && onboarding.Data != nil {
+		d.onboarding = onboarding.Data
+	}
+
 	d.pkce = &PKCELoginState{
 		SiteURL:      siteURL,
 		CallbackURL:  callbackURL,
@@ -102,10 +112,16 @@ func (d *DataMachineLogin) SubmitUserInput(_ context.Context, input map[string]s
 		return nil, err
 	}
 
+	// Use login instructions from onboarding metadata if available.
+	instructions := "Sign in and authorize the agent. You can scan the QR code or open the link in a browser."
+	if d.onboarding != nil && d.onboarding.LoginInstructions != "" {
+		instructions = d.onboarding.LoginInstructions
+	}
+
 	return &bridgev2.LoginStep{
 		Type:         bridgev2.LoginStepTypeDisplayAndWait,
 		StepID:       LoginStepIDAuthorize,
-		Instructions: "Sign in to Extra Chill and click **Authorize Roadie**. You can scan the QR code or open the link in a browser.",
+		Instructions: instructions,
 		DisplayAndWaitParams: &bridgev2.LoginDisplayAndWaitParams{
 			Type: bridgev2.LoginDisplayTypeQR,
 			Data: authorizeURL,
@@ -134,18 +150,24 @@ func (d *DataMachineLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error
 			return nil, err
 		}
 
+		displayName := tokenResp.AgentName
+		if d.onboarding != nil && d.onboarding.DisplayName != "" {
+			displayName = d.onboarding.DisplayName
+		}
+
 		loginID := networkid.UserLoginID(fmt.Sprintf("%s:%s", hostFromURL(d.siteURL), tokenResp.AgentSlug))
 		meta := &UserLoginMeta{
 			SiteURL:    d.siteURL,
 			AgentSlug:  tokenResp.AgentSlug,
-			AgentName:  tokenResp.AgentName,
+			AgentName:  displayName,
 			AgentToken: tokenResp.AccessToken,
 			SessionIDs: map[string]string{},
+			Onboarding: d.onboarding,
 		}
 
 		ul, err := d.User.NewLogin(ctx, &database.UserLogin{
 			ID:         loginID,
-			RemoteName: tokenResp.AgentName,
+			RemoteName: displayName,
 			Metadata:   meta,
 		}, &bridgev2.NewLoginParams{DontReuseExisting: false})
 		if err != nil {
@@ -154,10 +176,15 @@ func (d *DataMachineLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error
 
 		go ul.Client.(*DataMachineClient).Connect(ul.Log.WithContext(context.Background()))
 
+		completeMessage := fmt.Sprintf("Successfully connected to %s as %s", d.siteURL, displayName)
+		if d.onboarding != nil && d.onboarding.WelcomeMessage != "" {
+			completeMessage = d.onboarding.WelcomeMessage
+		}
+
 		return &bridgev2.LoginStep{
 			Type:         bridgev2.LoginStepTypeComplete,
 			StepID:       LoginStepIDComplete,
-			Instructions: fmt.Sprintf("Successfully connected to %s as %s", d.siteURL, tokenResp.AgentName),
+			Instructions: completeMessage,
 			CompleteParams: &bridgev2.LoginCompleteParams{
 				UserLoginID: ul.ID,
 				UserLogin:   ul,
@@ -203,6 +230,37 @@ func (d *DataMachineLogin) exchangeAuthorizationCode(ctx context.Context, code s
 	}
 
 	return &tokenResp, nil
+}
+
+// fetchOnboarding retrieves onboarding metadata from a WordPress site.
+// Used during the login flow before a DataMachineClient exists.
+func fetchOnboarding(ctx context.Context, siteURL, agentSlug string, timeout time.Duration) (*OnboardingResponse, error) {
+	endpoint := strings.TrimRight(siteURL, "/") + "/wp-json/chat-bridge/v1/onboarding"
+	if agentSlug != "" {
+		endpoint += "?agent_slug=" + agentSlug
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	client := httpClientWithTimeout(timeout)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("onboarding request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("onboarding returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var onboarding OnboardingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&onboarding); err != nil {
+		return nil, fmt.Errorf("failed to decode onboarding: %w", err)
+	}
+	return &onboarding, nil
 }
 
 func (d *DataMachineLogin) buildAuthorizeURL(siteURL, callbackURL, verifier, state string) (string, error) {

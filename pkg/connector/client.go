@@ -21,8 +21,8 @@ import (
 
 func init() {
 	status.BridgeStateHumanErrors.Update(status.BridgeStateErrorMap{
-		"datamachine-not-logged-in":   "Please sign in to Extra Chill and authorize Roadie",
-		"datamachine-invalid-auth":    "Your Roadie login is no longer valid. Please log in again",
+		"datamachine-not-logged-in":   "Please sign in and authorize the agent",
+		"datamachine-invalid-auth":    "Your login is no longer valid. Please log in again",
 		"datamachine-missing-session": "This conversation is not linked to a Data Machine session yet",
 	})
 }
@@ -77,6 +77,47 @@ type TokenExchangeResponse struct {
 	SiteHost    string `json:"site_host"`
 }
 
+// OnboardingResponse is the /chat-bridge/v1/onboarding API response.
+type OnboardingResponse struct {
+	Success bool            `json:"success"`
+	Data    *OnboardingData `json:"data,omitempty"`
+}
+
+// OnboardingData holds the onboarding metadata for a bridge client's first-run UX.
+type OnboardingData struct {
+	SiteURL           string            `json:"site_url"`
+	SiteName          string            `json:"site_name"`
+	SiteHost          string            `json:"site_host"`
+	AuthorizeURL      string            `json:"authorize_url"`
+	Agent             *OnboardingAgent  `json:"agent,omitempty"`
+	DisplayName       string            `json:"display_name"`
+	Description       string            `json:"description"`
+	AvatarURL         string            `json:"avatar_url"`
+	WelcomeMessage    string            `json:"welcome_message"`
+	LoginLabel        string            `json:"login_label"`
+	LoginInstructions string            `json:"login_instructions"`
+	Capabilities      map[string]string `json:"capabilities"`
+	RoomName          string            `json:"room_name"`
+	RoomTopic         string            `json:"room_topic"`
+}
+
+// OnboardingAgent holds agent identity from the onboarding endpoint.
+type OnboardingAgent struct {
+	AgentID   int    `json:"agent_id"`
+	AgentSlug string `json:"agent_slug"`
+	AgentName string `json:"agent_name"`
+	Status    string `json:"status"`
+}
+
+// SendResponse is the /chat-bridge/v1/send API response.
+type SendResponse struct {
+	Success   bool   `json:"success"`
+	SessionID string `json:"session_id"`
+	MessageID string `json:"message_id"`
+	Response  string `json:"response"`
+	Completed bool   `json:"completed"`
+}
+
 type PendingEnvelope struct {
 	Success  bool             `json:"success"`
 	Messages []PendingMessage `json:"messages"`
@@ -118,23 +159,36 @@ func (dmc *DataMachineClient) Connect(ctx context.Context) {
 		return
 	}
 
+	log := zerolog.Ctx(ctx)
+
 	ident, err := dmc.GetIdentity(ctx)
 	if err != nil {
-		zerolog.Ctx(ctx).Err(err).Msg("Failed to validate agent token")
+		log.Err(err).Msg("Failed to validate agent token")
 		dmc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateBadCredentials, Error: "datamachine-invalid-auth", Message: err.Error()})
 		return
 	}
 
+	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
 	if ident.Data != nil {
 		dmc.agentSlug = ident.Data.AgentSlug
-		meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
 		meta.AgentSlug = ident.Data.AgentSlug
 		meta.AgentName = ident.Data.AgentName
 	}
 
+	// Fetch onboarding metadata to configure room display and welcome message.
+	onboarding, err := dmc.GetOnboarding(ctx, dmc.agentSlug)
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to fetch onboarding metadata (non-fatal)")
+	} else if onboarding != nil && onboarding.Data != nil {
+		meta.Onboarding = onboarding.Data
+		if onboarding.Data.DisplayName != "" {
+			meta.AgentName = onboarding.Data.DisplayName
+		}
+	}
+
 	if dmc.Main.Config.CallbackURL != "" {
 		if err := dmc.RegisterBridge(ctx); err != nil {
-			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to register bridge webhook callback")
+			log.Warn().Err(err).Msg("Failed to register bridge webhook callback")
 		}
 	}
 
@@ -168,19 +222,62 @@ func (dmc *DataMachineClient) IsThisUser(_ context.Context, userID networkid.Use
 }
 
 func (dmc *DataMachineClient) GetChatInfo(_ context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
-	name := portal.Name
-	if name == "" {
-		name = dmc.agentSlug
+	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
+	info := &bridgev2.ChatInfo{}
+
+	// Use onboarding metadata for room name and topic.
+	if meta.Onboarding != nil && meta.Onboarding.RoomName != "" {
+		info.Name = ptrStr(meta.Onboarding.RoomName)
+	} else if meta.AgentName != "" {
+		info.Name = ptrStr(meta.AgentName)
+	} else if portal.Name != "" {
+		info.Name = ptrStr(portal.Name)
+	} else {
+		info.Name = ptrStr(dmc.agentSlug)
 	}
-	return &bridgev2.ChatInfo{Name: &name}, nil
+
+	if meta.Onboarding != nil && meta.Onboarding.RoomTopic != "" {
+		info.Topic = ptrStr(meta.Onboarding.RoomTopic)
+	}
+
+	return info, nil
 }
 
 func (dmc *DataMachineClient) GetUserInfo(_ context.Context, ghost *bridgev2.Ghost) (*bridgev2.UserInfo, error) {
-	name := ghost.Name
-	if name == "" {
-		name = dmc.agentSlug
+	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
+	name := dmc.agentSlug
+
+	if meta.Onboarding != nil && meta.Onboarding.DisplayName != "" {
+		name = meta.Onboarding.DisplayName
+	} else if meta.AgentName != "" {
+		name = meta.AgentName
+	} else if ghost.Name != "" {
+		name = ghost.Name
 	}
-	return &bridgev2.UserInfo{Name: ptrStr(name)}, nil
+
+	userInfo := &bridgev2.UserInfo{Name: ptrStr(name)}
+
+	// Set avatar from onboarding metadata.
+	if meta.Onboarding != nil && meta.Onboarding.AvatarURL != "" {
+		avatarURL := meta.Onboarding.AvatarURL
+		userInfo.Avatar = &bridgev2.Avatar{
+			ID: networkid.AvatarID(avatarURL),
+			Get: func(ctx context.Context) ([]byte, error) {
+				req, err := http.NewRequestWithContext(ctx, http.MethodGet, avatarURL, nil)
+				if err != nil {
+					return nil, err
+				}
+				resp, err := dmc.httpClient.Do(req)
+				if err != nil {
+					return nil, err
+				}
+				defer resp.Body.Close()
+				return io.ReadAll(resp.Body)
+			},
+		}
+	}
+
+	return userInfo, nil
 }
 
 func (dmc *DataMachineClient) GetCapabilities(_ context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
@@ -193,58 +290,77 @@ func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *brid
 		return nil, bridgev2.ErrNotLoggedIn
 	}
 
+	// Prefer plain text body for the chat API (HTML can confuse the agent).
 	text := msg.Content.Body
-	if msg.Content.FormattedBody != "" {
-		text = msg.Content.FormattedBody
-	}
 
 	sessionID, err := dmc.ensurePortalSessionID(ctx, msg.Portal)
 	if err != nil {
 		return nil, err
 	}
 
-	payload := map[string]string{
-		"message":    text,
-		"agent":      dmc.agentSlug,
-		"session_id": sessionID,
-	}
-	body, err := json.Marshal(payload)
+	sendResp, err := dmc.SendMessage(ctx, text, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal chat payload: %w", err)
+		return nil, err
 	}
 
-	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/chat"
+	// Update stored session ID if the server returned a new one.
+	if sendResp.SessionID != "" && sendResp.SessionID != sessionID {
+		meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
+		portalKey := string(msg.Portal.PortalKey.ID) + "|" + string(msg.Portal.PortalKey.Receiver)
+		meta.RememberSessionID(portalKey, sendResp.SessionID)
+		if err := dmc.UserLogin.Save(ctx); err != nil {
+			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to save updated session ID")
+		}
+	}
+
+	msgID := networkid.MessageID(sendResp.MessageID)
+	if msgID == "" {
+		msgID = networkid.MessageID(msg.Event.ID)
+	}
+
+	return &bridgev2.MatrixMessageResponse{DB: &database.Message{ID: msgID}}, nil
+}
+
+// SendMessage sends a user message via the bridge /send endpoint.
+// This uses the dedicated bridge inbound endpoint instead of the raw /chat API.
+func (dmc *DataMachineClient) SendMessage(ctx context.Context, message, sessionID string) (*SendResponse, error) {
+	payload := map[string]string{
+		"message": message,
+	}
+	if sessionID != "" {
+		payload["session_id"] = sessionID
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal send payload: %w", err)
+	}
+
+	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/chat-bridge/v1/send"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("failed to create chat request: %w", err)
+		return nil, fmt.Errorf("failed to create send request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+dmc.agentToken)
 
 	resp, err := dmc.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("chat request failed: %w", err)
+		return nil, fmt.Errorf("send request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("chat request returned %d: %s", resp.StatusCode, string(respBody))
+		return nil, fmt.Errorf("send returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	var chatResp struct {
-		MessageID string `json:"message_id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		return nil, fmt.Errorf("failed to decode chat response: %w", err)
+	var sendResp SendResponse
+	if err := json.NewDecoder(resp.Body).Decode(&sendResp); err != nil {
+		return nil, fmt.Errorf("failed to decode send response: %w", err)
 	}
 
-	msgID := networkid.MessageID(chatResp.MessageID)
-	if msgID == "" {
-		msgID = networkid.MessageID(msg.Event.ID)
-	}
-
-	return &bridgev2.MatrixMessageResponse{DB: &database.Message{ID: msgID}}, nil
+	return &sendResp, nil
 }
 
 func (dmc *DataMachineClient) GetIdentity(ctx context.Context) (*IdentityResponse, error) {
@@ -282,6 +398,42 @@ func (dmc *DataMachineClient) GetIdentity(ctx context.Context) (*IdentityRespons
 		}
 	}
 	return &ident, nil
+}
+
+// GetOnboarding fetches the onboarding metadata from the WordPress site.
+// This is called during connect and during the login flow to populate
+// display information, welcome messages, and room configuration.
+// The endpoint is unauthenticated — it works before login too.
+func (dmc *DataMachineClient) GetOnboarding(ctx context.Context, agentSlug string) (*OnboardingResponse, error) {
+	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/chat-bridge/v1/onboarding"
+	if agentSlug != "" {
+		url += "?agent_slug=" + agentSlug
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Include auth if available (not required, but may yield richer metadata).
+	if dmc.agentToken != "" {
+		req.Header.Set("Authorization", "Bearer "+dmc.agentToken)
+	}
+
+	resp, err := dmc.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("onboarding request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("onboarding returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var onboarding OnboardingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&onboarding); err != nil {
+		return nil, fmt.Errorf("failed to decode onboarding response: %w", err)
+	}
+	return &onboarding, nil
 }
 
 func (dmc *DataMachineClient) RegisterBridge(ctx context.Context) error {

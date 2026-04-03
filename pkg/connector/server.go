@@ -166,11 +166,11 @@ func (s *CallbackServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 func callbackPage(success bool, callbackError string) string {
-	title := "Roadie authorization complete"
-	body := "You can return to Beeper now."
+	title := "Authorization complete"
+	body := "You can return to your chat app now."
 
 	if !success {
-		title = "Roadie authorization failed"
+		title = "Authorization failed"
 		body = fmt.Sprintf("Authorization failed: %s", html.EscapeString(callbackError))
 	}
 

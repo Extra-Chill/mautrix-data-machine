@@ -4,9 +4,12 @@ displayname_template: "{{.Name}}"
 
 # Default WordPress site URL shown during login.
 # The browser login flow will authorize the configured agent slug on this site.
+# The bridge fetches /wp-json/chat-bridge/v1/onboarding from this URL
+# to populate login instructions, display names, welcome messages, and room config.
 default_site_url: "https://studio.extrachill.com"
 
 # Agent slug to authorize through the browser flow.
+# This slug is passed to the onboarding endpoint to get agent-specific metadata.
 agent_slug: "roadie"
 
 # How often to poll WordPress for pending messages (default: 5s).

@@ -241,7 +241,10 @@ func (dmc *DataMachineClient) IsThisUser(_ context.Context, userID networkid.Use
 
 func (dmc *DataMachineClient) GetChatInfo(_ context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
-	info := &bridgev2.ChatInfo{}
+	dmType := database.RoomTypeDM
+	info := &bridgev2.ChatInfo{
+		Type: &dmType,
+	}
 
 	// Use onboarding metadata for room name and topic.
 	if meta.Onboarding != nil && meta.Onboarding.RoomName != "" {
@@ -256,6 +259,20 @@ func (dmc *DataMachineClient) GetChatInfo(_ context.Context, portal *bridgev2.Po
 
 	if meta.Onboarding != nil && meta.Onboarding.RoomTopic != "" {
 		info.Topic = ptrStr(meta.Onboarding.RoomTopic)
+	}
+
+	// Members: the ghost (agent) and the user.
+	agentGhostID := networkid.UserID(dmc.agentSlug)
+	info.Members = &bridgev2.ChatMemberList{
+		IsFull: true,
+		Members: []bridgev2.ChatMember{
+			{
+				EventSender: bridgev2.EventSender{
+					SenderLogin: dmc.UserLogin.ID,
+					Sender:      agentGhostID,
+				},
+			},
+		},
 	}
 
 	return info, nil

@@ -267,19 +267,8 @@ func (dmc *DataMachineClient) GetChatInfo(_ context.Context, portal *bridgev2.Po
 		info.Topic = ptrStr(meta.Onboarding.RoomTopic)
 	}
 
-	// Members: the ghost (agent) and the user.
-	agentGhostID := networkid.UserID(dmc.agentSlug)
-	info.Members = &bridgev2.ChatMemberList{
-		IsFull: true,
-		Members: []bridgev2.ChatMember{
-			{
-				EventSender: bridgev2.EventSender{
-					SenderLogin: dmc.UserLogin.ID,
-					Sender:      agentGhostID,
-				},
-			},
-		},
-	}
+	// Don't provide Members — the framework auto-invites the source user
+	// when Members is nil, which is exactly what we want for DM rooms.
 
 	return info, nil
 }

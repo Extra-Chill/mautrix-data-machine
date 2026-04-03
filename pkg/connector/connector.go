@@ -28,8 +28,13 @@ func (dc *DataMachineConnector) Start(ctx context.Context) error {
 }
 
 func (dc *DataMachineConnector) GetName() bridgev2.BridgeName {
+	displayName := "Data Machine"
+	if dc.Config.NetworkDisplayName != "" {
+		displayName = dc.Config.NetworkDisplayName
+	}
+
 	return bridgev2.BridgeName{
-		DisplayName:      "Data Machine",
+		DisplayName:      displayName,
 		NetworkURL:       "https://github.com/Extra-Chill/data-machine",
 		NetworkID:        "datamachine",
 		BeeperBridgeType: "sh-datamachine",

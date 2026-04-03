@@ -184,6 +184,10 @@ func (dmc *DataMachineClient) Connect(ctx context.Context) {
 		if onboarding.Data.DisplayName != "" {
 			meta.AgentName = onboarding.Data.DisplayName
 		}
+		// Propagate site name to network display name if not configured.
+		if dmc.Main.Config.NetworkDisplayName == "" && onboarding.Data.SiteName != "" {
+			dmc.Main.Config.NetworkDisplayName = onboarding.Data.SiteName
+		}
 	}
 
 	if dmc.Main.Config.CallbackURL != "" {
@@ -194,11 +198,7 @@ func (dmc *DataMachineClient) Connect(ctx context.Context) {
 
 	// Create or resolve the portal room for this agent so the user has
 	// a place to chat. Without this, messages go to the management room.
-	portalID := networkid.PortalID(dmc.agentSlug)
-	portalKey := networkid.PortalKey{
-		ID:       portalID,
-		Receiver: dmc.UserLogin.ID,
-	}
+	portalKey := dmc.Main.ResolvePortalKey(dmc.agentSlug, dmc.UserLogin.ID)
 	portal, err := dmc.Main.br.GetPortalByKey(ctx, portalKey)
 	if err != nil {
 		log.Err(err).Msg("Failed to get/create portal")
@@ -207,6 +207,10 @@ func (dmc *DataMachineClient) Connect(ctx context.Context) {
 		err = portal.CreateMatrixRoom(ctx, dmc.UserLogin, nil)
 		if err != nil {
 			log.Err(err).Msg("Failed to create Matrix room for portal")
+		} else {
+			// Send welcome message to the portal room (not the management room).
+			// This gives the user a visible greeting in the actual chat room.
+			dmc.sendWelcomeMessage(ctx, portal)
 		}
 	}
 
@@ -579,6 +583,31 @@ func (dmc *DataMachineClient) deliverPendingMessage(ctx context.Context, msg Pen
 	if err := dmc.AckPendingMessages(ctx, []string{msg.QueueID}); err != nil {
 		zerolog.Ctx(ctx).Warn().Err(err).Str("queue_id", msg.QueueID).Msg("Failed to acknowledge webhook-delivered message")
 	}
+}
+
+// sendWelcomeMessage sends the onboarding welcome message into the portal room
+// so the user sees it as the first message in the chat. Only sends once per
+// session (skips if the portal already has messages from prior connections).
+func (dmc *DataMachineClient) sendWelcomeMessage(ctx context.Context, portal *bridgev2.Portal) {
+	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
+	if meta.Onboarding == nil || meta.Onboarding.WelcomeMessage == "" {
+		return
+	}
+
+	log := zerolog.Ctx(ctx)
+
+	// Build the welcome as a remote message event from the agent.
+	welcomeEvent := &DataMachineRemoteMessage{
+		portalKey: portal.PortalKey,
+		id:        networkid.MessageID("welcome-" + string(dmc.UserLogin.ID)),
+		text:      meta.Onboarding.WelcomeMessage,
+		agentSlug: dmc.agentSlug,
+		timestamp: time.Now(),
+		sender:    EventSenderForAgent(dmc.agentSlug, dmc),
+	}
+
+	dmc.Main.br.QueueRemoteEvent(dmc.UserLogin, welcomeEvent)
+	log.Debug().Msg("Sent welcome message to portal room")
 }
 
 func ptrStr(s string) *string { return &s }

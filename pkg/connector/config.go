@@ -26,6 +26,8 @@ type Config struct {
 	CallbackURL string `yaml:"callback_url"`
 	// Port for the callback listener (if callback_url is set).
 	CallbackPort int `yaml:"callback_port"`
+	// Override the network display name shown in Beeper (default: from onboarding or "Data Machine").
+	NetworkDisplayName string `yaml:"network_display_name"`
 }
 
 type umConfig Config
@@ -65,4 +67,5 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "agent_slug")
 	helper.Copy(up.Str, "callback_url")
 	helper.Copy(up.Int, "callback_port")
+	helper.Copy(up.Str, "network_display_name")
 }

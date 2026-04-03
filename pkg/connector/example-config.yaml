@@ -24,3 +24,7 @@ callback_url: ""
 
 # Port for the callback listener (default: 29340).
 callback_port: 29340
+
+# Override the network display name shown in Beeper's sidebar.
+# If empty, uses the site_name from WordPress onboarding metadata, or "Data Machine" as fallback.
+network_display_name: ""

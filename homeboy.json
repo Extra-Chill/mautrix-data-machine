@@ -1,9 +1,11 @@
 {
-  "id": "mautrix-data-machine",
+  "auto_cleanup": false,
   "changelog_target": "docs/CHANGELOG.md",
   "extensions": {
     "go": {}
   },
+  "id": "mautrix-data-machine",
+  "remote_path": "",
   "version_targets": [
     {
       "file": "component.json",

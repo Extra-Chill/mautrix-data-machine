@@ -18,9 +18,9 @@ poll_interval: 5s
 # Timeout for HTTP requests to the WordPress site (default: 30s).
 request_timeout: 30s
 
-# Public callback URL for both webhook delivery and PKCE browser login.
+# Public callback URL for PKCE browser login redirect.
 # This exact URL must be allowed in the agent's allowed_redirect_uris config.
-# callback_url: "https://your-bridge.example.com:29340/callback"
+callback_url: ""
 
 # Port for the callback listener (default: 29340).
-# callback_port: 29340
+callback_port: 29340

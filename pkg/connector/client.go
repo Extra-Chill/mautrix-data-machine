@@ -318,23 +318,21 @@ func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *brid
 	// Prefer plain text body for the chat API (HTML can confuse the agent).
 	text := msg.Content.Body
 
-	sessionID, err := dmc.ensurePortalSessionID(ctx, msg.Portal)
-	if err != nil {
-		return nil, err
-	}
+	// Use existing session ID if available, or empty to let WordPress create one.
+	sessionID := dmc.getPortalSessionID(msg.Portal)
 
 	sendResp, err := dmc.SendMessage(ctx, text, sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Update stored session ID if the server returned a new one.
-	if sendResp.SessionID != "" && sendResp.SessionID != sessionID {
+	// Save the session ID from the response for subsequent messages.
+	if sendResp.SessionID != "" {
 		meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
 		portalKey := string(msg.Portal.PortalKey.ID) + "|" + string(msg.Portal.PortalKey.Receiver)
 		meta.RememberSessionID(portalKey, sendResp.SessionID)
 		if err := dmc.UserLogin.Save(ctx); err != nil {
-			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to save updated session ID")
+			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to save session ID")
 		}
 	}
 
@@ -567,23 +565,13 @@ func (dmc *DataMachineClient) AckPendingMessages(ctx context.Context, ids []stri
 	return nil
 }
 
-func (dmc *DataMachineClient) ensurePortalSessionID(ctx context.Context, portal *bridgev2.Portal) (string, error) {
+func (dmc *DataMachineClient) getPortalSessionID(portal *bridgev2.Portal) string {
 	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
 	portalKey := string(portal.PortalKey.ID) + "|" + string(portal.PortalKey.Receiver)
 	if portalKey == "" {
 		portalKey = string(portal.ID)
 	}
-
-	if existing := meta.SessionIDForPortal(portalKey); existing != "" {
-		return existing, nil
-	}
-
-	sessionID := fmt.Sprintf("mx:%s:%s", dmc.UserLogin.ID, portalKey)
-	meta.RememberSessionID(portalKey, sessionID)
-	if err := dmc.UserLogin.Save(ctx); err != nil {
-		return "", fmt.Errorf("failed to save portal session mapping: %w", err)
-	}
-	return sessionID, nil
+	return meta.SessionIDForPortal(portalKey)
 }
 
 func (dmc *DataMachineClient) deliverPendingMessage(ctx context.Context, msg PendingMessage) {

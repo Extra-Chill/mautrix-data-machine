@@ -205,7 +205,7 @@ func (d *DataMachineLogin) exchangeAuthorizationCode(ctx context.Context, code s
 		return nil, err
 	}
 
-	url := strings.TrimRight(d.pkce.SiteURL, "/") + "/wp-json/chat-bridge/v1/token"
+	url := strings.TrimRight(d.pkce.SiteURL, "/") + "/wp-json/datamachine/v1/bridge/token"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -235,7 +235,7 @@ func (d *DataMachineLogin) exchangeAuthorizationCode(ctx context.Context, code s
 // fetchOnboarding retrieves onboarding metadata from a WordPress site.
 // Used during the login flow before a DataMachineClient exists.
 func fetchOnboarding(ctx context.Context, siteURL, agentSlug string, timeout time.Duration) (*OnboardingResponse, error) {
-	endpoint := strings.TrimRight(siteURL, "/") + "/wp-json/chat-bridge/v1/onboarding"
+	endpoint := strings.TrimRight(siteURL, "/") + "/wp-json/datamachine/v1/bridge/onboarding"
 	if agentSlug != "" {
 		endpoint += "?agent_slug=" + agentSlug
 	}

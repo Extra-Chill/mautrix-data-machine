@@ -77,7 +77,7 @@ type TokenExchangeResponse struct {
 	SiteHost    string `json:"site_host"`
 }
 
-// OnboardingResponse is the /chat-bridge/v1/onboarding API response.
+// OnboardingResponse is the /datamachine/v1/bridge/onboarding API response.
 type OnboardingResponse struct {
 	Success bool            `json:"success"`
 	Data    *OnboardingData `json:"data,omitempty"`
@@ -109,7 +109,7 @@ type OnboardingAgent struct {
 	Status    string `json:"status"`
 }
 
-// SendResponse is the /chat-bridge/v1/send API response.
+// SendResponse is the /datamachine/v1/bridge/send API response.
 type SendResponse struct {
 	Success   bool   `json:"success"`
 	SessionID string `json:"session_id"`
@@ -336,7 +336,7 @@ func (dmc *DataMachineClient) SendMessage(ctx context.Context, message, sessionI
 		return nil, fmt.Errorf("failed to marshal send payload: %w", err)
 	}
 
-	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/chat-bridge/v1/send"
+	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/bridge/send"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create send request: %w", err)
@@ -364,7 +364,7 @@ func (dmc *DataMachineClient) SendMessage(ctx context.Context, message, sessionI
 }
 
 func (dmc *DataMachineClient) GetIdentity(ctx context.Context) (*IdentityResponse, error) {
-	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/chat-bridge/v1/identity"
+	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/bridge/identity"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -405,7 +405,7 @@ func (dmc *DataMachineClient) GetIdentity(ctx context.Context) (*IdentityRespons
 // display information, welcome messages, and room configuration.
 // The endpoint is unauthenticated — it works before login too.
 func (dmc *DataMachineClient) GetOnboarding(ctx context.Context, agentSlug string) (*OnboardingResponse, error) {
-	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/chat-bridge/v1/onboarding"
+	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/bridge/onboarding"
 	if agentSlug != "" {
 		url += "?agent_slug=" + agentSlug
 	}
@@ -450,7 +450,7 @@ func (dmc *DataMachineClient) RegisterBridge(ctx context.Context) error {
 		return err
 	}
 
-	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/chat-bridge/v1/register"
+	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/bridge/register"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -472,7 +472,7 @@ func (dmc *DataMachineClient) RegisterBridge(ctx context.Context) error {
 }
 
 func (dmc *DataMachineClient) GetPendingMessages(ctx context.Context) ([]PendingMessage, error) {
-	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/chat-bridge/v1/pending"
+	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/bridge/pending"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -521,7 +521,7 @@ func (dmc *DataMachineClient) AckPendingMessages(ctx context.Context, ids []stri
 		return err
 	}
 
-	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/chat-bridge/v1/ack"
+	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/bridge/ack"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err

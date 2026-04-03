@@ -192,6 +192,24 @@ func (dmc *DataMachineClient) Connect(ctx context.Context) {
 		}
 	}
 
+	// Create or resolve the portal room for this agent so the user has
+	// a place to chat. Without this, messages go to the management room.
+	portalID := networkid.PortalID(dmc.agentSlug)
+	portalKey := networkid.PortalKey{
+		ID:       portalID,
+		Receiver: dmc.UserLogin.ID,
+	}
+	portal, err := dmc.Main.br.GetPortalByKey(ctx, portalKey)
+	if err != nil {
+		log.Err(err).Msg("Failed to get/create portal")
+	} else if portal != nil {
+		// Ensure the room exists on Matrix.
+		err = portal.CreateMatrixRoom(ctx, dmc.UserLogin, nil)
+		if err != nil {
+			log.Err(err).Msg("Failed to create Matrix room for portal")
+		}
+	}
+
 	go dmc.startPolling()
 	dmc.UserLogin.BridgeState.Send(status.BridgeState{StateEvent: status.StateConnected})
 }

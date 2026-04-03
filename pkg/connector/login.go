@@ -161,6 +161,12 @@ func (d *DataMachineLogin) Wait(ctx context.Context) (*bridgev2.LoginStep, error
 			return nil, err
 		}
 
+		// Verify the user actually has access to this agent before completing login.
+		// The identity endpoint validates the token and checks agent access permissions.
+		if err := d.verifyAgentAccess(ctx, tokenResp.AccessToken); err != nil {
+			return nil, err
+		}
+
 		displayName := tokenResp.AgentName
 		if d.onboarding != nil && d.onboarding.DisplayName != "" {
 			displayName = d.onboarding.DisplayName
@@ -241,6 +247,35 @@ func (d *DataMachineLogin) exchangeAuthorizationCode(ctx context.Context, code s
 	}
 
 	return &tokenResp, nil
+}
+
+// verifyAgentAccess checks that the authenticated user can actually access the agent.
+// Called after token exchange but before completing the login. If the user doesn't
+// have permission, the login is rejected with a clear error message.
+func (d *DataMachineLogin) verifyAgentAccess(ctx context.Context, token string) error {
+	endpoint := strings.TrimRight(d.siteURL, "/") + "/wp-json/datamachine/v1/bridge/identity"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return fmt.Errorf("failed to build access check request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	client := httpClientWithTimeout(d.Main.Config.RequestTimeout)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("access check failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusUnauthorized {
+		return fmt.Errorf("you don't have access to this agent. Contact the site administrator to request access")
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("access check returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
 }
 
 // fetchOnboarding retrieves onboarding metadata from a WordPress site.

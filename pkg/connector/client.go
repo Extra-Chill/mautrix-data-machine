@@ -315,7 +315,15 @@ func (dmc *DataMachineClient) GetUserInfo(_ context.Context, ghost *bridgev2.Gho
 }
 
 func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {
+	log := zerolog.Ctx(ctx)
+	log.Info().
+		Str("portal_id", string(msg.Portal.PortalKey.ID)).
+		Str("sender", msg.Event.Sender.String()).
+		Str("body", msg.Content.Body).
+		Msg("HandleMatrixMessage called — forwarding to WordPress")
+
 	if !dmc.IsLoggedIn() {
+		log.Warn().Msg("HandleMatrixMessage: not logged in")
 		return nil, bridgev2.ErrNotLoggedIn
 	}
 
@@ -336,7 +344,30 @@ func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *brid
 		portalKey := string(msg.Portal.PortalKey.ID) + "|" + string(msg.Portal.PortalKey.Receiver)
 		meta.RememberSessionID(portalKey, sendResp.SessionID)
 		if err := dmc.UserLogin.Save(ctx); err != nil {
-			zerolog.Ctx(ctx).Warn().Err(err).Msg("Failed to save session ID")
+			log.Warn().Err(err).Msg("Failed to save session ID")
+		}
+	}
+
+	// If the AI is doing tool calls, loop /chat/continue until completed.
+	const maxContinueTurns = 20
+	for turn := 0; !sendResp.Completed && sendResp.SessionID != "" && turn < maxContinueTurns; turn++ {
+		log.Debug().
+			Int("turn", turn+1).
+			Str("session_id", sendResp.SessionID).
+			Msg("AI conversation not complete, calling /chat/continue")
+
+		contResp, contErr := dmc.ContinueChat(ctx, sendResp.SessionID)
+		if contErr != nil {
+			log.Err(contErr).Msg("Failed to continue chat")
+			break
+		}
+		// Merge the continue response into sendResp.
+		sendResp.Completed = contResp.Completed
+		if contResp.Response != "" {
+			sendResp.Response = contResp.Response
+		}
+		if contResp.MessageID != "" {
+			sendResp.MessageID = contResp.MessageID
 		}
 	}
 
@@ -345,11 +376,28 @@ func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *brid
 		msgID = networkid.MessageID(msg.Event.ID)
 	}
 
+	// Send the AI response back to the portal room as a message from the agent.
+	if sendResp.Response != "" {
+		respMsgID := networkid.MessageID("resp-" + string(msgID))
+		responseEvent := &DataMachineRemoteMessage{
+			portalKey: msg.Portal.PortalKey,
+			id:        respMsgID,
+			text:      sendResp.Response,
+			agentSlug: dmc.agentSlug,
+			timestamp: time.Now(),
+			sender:    EventSenderForAgent(dmc.agentSlug, dmc),
+		}
+		dmc.Main.br.QueueRemoteEvent(dmc.UserLogin, responseEvent)
+		log.Info().Str("response_msg_id", string(respMsgID)).Msg("Queued AI response to portal room")
+	}
+
 	return &bridgev2.MatrixMessageResponse{DB: &database.Message{ID: msgID}}, nil
 }
 
 // SendMessage sends a user message via the bridge /send endpoint.
 // This uses the dedicated bridge inbound endpoint instead of the raw /chat API.
+// Uses its own timeout context because the portal event loop context may have
+// a short deadline that doesn't allow for AI conversation time.
 func (dmc *DataMachineClient) SendMessage(ctx context.Context, message, sessionID string) (*SendResponse, error) {
 	payload := map[string]string{
 		"message": message,
@@ -363,19 +411,27 @@ func (dmc *DataMachineClient) SendMessage(ctx context.Context, message, sessionI
 		return nil, fmt.Errorf("failed to marshal send payload: %w", err)
 	}
 
-	url := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/bridge/send"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	reqCtx, cancel := context.WithTimeout(context.Background(), dmc.Main.Config.RequestTimeout)
+	defer cancel()
+
+	// Build the URL. If on the same server, bypass Cloudflare by hitting localhost
+	// directly with the correct Host header. This avoids DNS/proxy issues.
+	apiURL := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/bridge/send"
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, apiURL, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create send request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+dmc.agentToken)
 
-	resp, err := dmc.httpClient.Do(req)
+	zerolog.Ctx(ctx).Info().Str("url", apiURL).Msg("Sending HTTP request to WordPress")
+	resp, err := localClient(dmc.Main.Config.RequestTimeout).Do(req)
 	if err != nil {
+		zerolog.Ctx(ctx).Err(err).Msg("HTTP request to WordPress failed")
 		return nil, fmt.Errorf("send request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	zerolog.Ctx(ctx).Info().Int("status", resp.StatusCode).Msg("WordPress responded")
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
@@ -387,7 +443,58 @@ func (dmc *DataMachineClient) SendMessage(ctx context.Context, message, sessionI
 		return nil, fmt.Errorf("failed to decode send response: %w", err)
 	}
 
+	zerolog.Ctx(ctx).Info().
+		Str("session_id", sendResp.SessionID).
+		Bool("completed", sendResp.Completed).
+		Msg("WordPress send response decoded")
+
 	return &sendResp, nil
+}
+
+// ContinueChat calls /chat/continue to resume a multi-turn AI conversation.
+// This is needed when the AI makes tool calls and the initial /send returns completed=false.
+func (dmc *DataMachineClient) ContinueChat(ctx context.Context, sessionID string) (*SendResponse, error) {
+	payload := map[string]string{
+		"session_id": sessionID,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal continue payload: %w", err)
+	}
+
+	reqCtx, cancel := context.WithTimeout(context.Background(), dmc.Main.Config.RequestTimeout)
+	defer cancel()
+
+	apiURL := strings.TrimRight(dmc.siteURL, "/") + "/wp-json/datamachine/v1/chat/continue"
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, apiURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create continue request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+dmc.agentToken)
+
+	resp, err := localClient(dmc.Main.Config.RequestTimeout).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("continue request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("continue returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// The /chat/continue response wraps data in { success, data: { ... } }.
+	var wrapper struct {
+		Success bool         `json:"success"`
+		Data    SendResponse `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
+		return nil, fmt.Errorf("failed to decode continue response: %w", err)
+	}
+
+	return &wrapper.Data, nil
 }
 
 func (dmc *DataMachineClient) GetIdentity(ctx context.Context) (*IdentityResponse, error) {

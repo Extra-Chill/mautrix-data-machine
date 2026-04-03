@@ -1,10 +1,13 @@
 package connector
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,6 +25,28 @@ func hostFromURL(rawURL string) string {
 func httpClientWithTimeout(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
+	}
+}
+
+// localClient returns an HTTP client that resolves all hostnames to 127.0.0.1,
+// bypassing DNS/Cloudflare when the bridge runs on the same server as WordPress.
+// The original Host header is preserved so nginx routes correctly.
+func localClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				// Replace the hostname with localhost, keep the port.
+				_, port, _ := net.SplitHostPort(addr)
+				if port == "" {
+					port = "443"
+				}
+				return (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, network, "127.0.0.1:"+port)
+			},
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, //nolint:gosec // localhost self-signed is fine
+			},
+		},
 	}
 }
 

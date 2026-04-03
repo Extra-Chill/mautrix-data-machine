@@ -8,6 +8,7 @@ import (
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/format"
 )
 
 func (dmc *DataMachineClient) startPolling() {
@@ -102,5 +103,12 @@ func (m *DataMachineRemoteMessage) GetSender() bridgev2.EventSender { return m.s
 func (m *DataMachineRemoteMessage) GetID() networkid.MessageID       { return m.id }
 func (m *DataMachineRemoteMessage) GetTimestamp() time.Time          { return m.timestamp }
 func (m *DataMachineRemoteMessage) ConvertMessage(_ context.Context, _ *bridgev2.Portal, _ bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {
-	return &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{ID: "part0", Type: event.EventMessage, Content: &event.MessageEventContent{MsgType: event.MsgText, Body: m.text}}}}, nil
+	// Render markdown to HTML for rich display in Matrix/Beeper clients.
+	content := format.RenderMarkdown(m.text, true, false)
+	content.MsgType = event.MsgText
+	return &bridgev2.ConvertedMessage{Parts: []*bridgev2.ConvertedMessagePart{{
+		ID:      "part0",
+		Type:    event.EventMessage,
+		Content: &content,
+	}}}, nil
 }

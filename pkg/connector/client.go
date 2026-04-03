@@ -239,6 +239,12 @@ func (dmc *DataMachineClient) IsThisUser(_ context.Context, userID networkid.Use
 	return networkid.UserID(dmc.agentSlug+"@"+hostFromURL(dmc.siteURL)) == userID
 }
 
+func (dmc *DataMachineClient) GetCapabilities(_ context.Context, _ *bridgev2.Portal) *event.RoomFeatures {
+	return &event.RoomFeatures{
+		ID: "fi.mau.datamachine",
+	}
+}
+
 func (dmc *DataMachineClient) GetChatInfo(_ context.Context, portal *bridgev2.Portal) (*bridgev2.ChatInfo, error) {
 	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
 	dmType := database.RoomTypeDM
@@ -313,11 +319,6 @@ func (dmc *DataMachineClient) GetUserInfo(_ context.Context, ghost *bridgev2.Gho
 	}
 
 	return userInfo, nil
-}
-
-func (dmc *DataMachineClient) GetCapabilities(_ context.Context, portal *bridgev2.Portal) *event.RoomFeatures {
-	_ = portal
-	return nil
 }
 
 func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *bridgev2.MatrixMessage) (*bridgev2.MatrixMessageResponse, error) {

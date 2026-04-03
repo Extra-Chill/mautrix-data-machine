@@ -48,8 +48,19 @@ type DataMachineLogin struct {
 var _ bridgev2.LoginProcessUserInput = (*DataMachineLogin)(nil)
 var _ bridgev2.LoginProcessDisplayAndWait = (*DataMachineLogin)(nil)
 
-func (d *DataMachineLogin) Start(_ context.Context) (*bridgev2.LoginStep, error) {
+func (d *DataMachineLogin) Start(ctx context.Context) (*bridgev2.LoginStep, error) {
 	defaultSiteURL := d.Main.Config.DefaultSiteURL
+
+	// If a default site URL is configured, skip the URL input step entirely
+	// and go straight to the authorize/QR step. This is the expected flow
+	// for branded deployments where the site URL is known.
+	if defaultSiteURL != "" {
+		return d.SubmitUserInput(ctx, map[string]string{
+			"site_url": defaultSiteURL,
+		})
+	}
+
+	// No default configured — ask the user for the site URL.
 	return &bridgev2.LoginStep{
 		Type:   bridgev2.LoginStepTypeUserInput,
 		StepID: LoginStepIDSiteURL,
@@ -59,7 +70,7 @@ func (d *DataMachineLogin) Start(_ context.Context) (*bridgev2.LoginStep, error)
 				Type:         bridgev2.LoginInputFieldTypeURL,
 				ID:           "site_url",
 				Name:         "Site URL",
-				Description:  "The WordPress site URL (e.g., https://studio.extrachill.com)",
+				Description:  "The WordPress site URL",
 				DefaultValue: defaultSiteURL,
 				Pattern:      "^https?://.+$",
 			}},

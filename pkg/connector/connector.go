@@ -2,6 +2,7 @@ package connector
 
 import (
 	"context"
+	"time"
 
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
@@ -81,6 +82,8 @@ type UserLoginMeta struct {
 	AgentName  string            `json:"agent_name,omitempty"`
 	AgentToken string            `json:"agent_token"`
 	SessionIDs map[string]string `json:"session_ids,omitempty"`
+	// Tracks the last message timestamp per portal for session TTL rotation.
+	LastMessageAt map[string]time.Time `json:"last_message_at,omitempty"`
 	// Onboarding metadata from WordPress, cached at connect time.
 	Onboarding *OnboardingData `json:"onboarding,omitempty"`
 }
@@ -106,4 +109,32 @@ func (m *UserLoginMeta) HasSessionID(sessionID string) bool {
 		}
 	}
 	return false
+}
+
+// TouchPortal records the current time as the last message time for a portal.
+func (m *UserLoginMeta) TouchPortal(portalKey string) {
+	if m.LastMessageAt == nil {
+		m.LastMessageAt = make(map[string]time.Time)
+	}
+	m.LastMessageAt[portalKey] = time.Now()
+}
+
+// IsSessionExpired checks if the session for a portal has been idle longer than ttl.
+// Returns true if the session should be rotated.
+func (m *UserLoginMeta) IsSessionExpired(portalKey string, ttl time.Duration) bool {
+	if m.LastMessageAt == nil {
+		return false
+	}
+	lastMsg, ok := m.LastMessageAt[portalKey]
+	if !ok {
+		return false
+	}
+	return time.Since(lastMsg) > ttl
+}
+
+// ClearSession removes the session ID and last-message timestamp for a portal,
+// forcing the next message to create a fresh session.
+func (m *UserLoginMeta) ClearSession(portalKey string) {
+	delete(m.SessionIDs, portalKey)
+	delete(m.LastMessageAt, portalKey)
 }

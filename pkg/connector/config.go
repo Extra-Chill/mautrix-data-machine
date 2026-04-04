@@ -28,6 +28,11 @@ type Config struct {
 	CallbackPort int `yaml:"callback_port"`
 	// Override the network display name shown in Beeper (default: from onboarding or "Data Machine").
 	NetworkDisplayName string `yaml:"network_display_name"`
+	// How long a session can be idle before auto-rotating to a fresh one.
+	// The agent's memory files (SOUL.md, MEMORY.md) are injected every session,
+	// so only the immediate conversation context is lost on rotation.
+	// Default: 24h. Set to 0 to disable auto-rotation.
+	SessionIdleTTL time.Duration `yaml:"session_idle_ttl"`
 }
 
 type umConfig Config
@@ -52,6 +57,9 @@ func (c *Config) UnmarshalYAML(unmarshal func(interface{}) error) error {
 	if c.CallbackPort == 0 {
 		c.CallbackPort = 29340
 	}
+	if c.SessionIdleTTL == 0 {
+		c.SessionIdleTTL = 24 * time.Hour
+	}
 	return nil
 }
 
@@ -68,4 +76,5 @@ func upgradeConfig(helper up.Helper) {
 	helper.Copy(up.Str, "callback_url")
 	helper.Copy(up.Int, "callback_port")
 	helper.Copy(up.Str, "network_display_name")
+	helper.Copy(up.Str, "session_idle_ttl")
 }

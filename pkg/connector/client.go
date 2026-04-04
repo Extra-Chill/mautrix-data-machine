@@ -40,7 +40,10 @@ type DataMachineClient struct {
 	stopOnce   sync.Once
 }
 
-var _ bridgev2.NetworkAPI = (*DataMachineClient)(nil)
+var (
+	_ bridgev2.NetworkAPI                    = (*DataMachineClient)(nil)
+	_ bridgev2.ReadReceiptHandlingNetworkAPI = (*DataMachineClient)(nil)
+)
 
 type IdentityResponse struct {
 	Success   bool          `json:"success"`
@@ -327,22 +330,41 @@ func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *brid
 		return nil, bridgev2.ErrNotLoggedIn
 	}
 
+	// Show "typing..." indicator while the AI processes the message.
+	dmc.setAgentTyping(ctx, msg.Portal, true)
+
 	// Prefer plain text body for the chat API (HTML can confuse the agent).
 	text := msg.Content.Body
 
+	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
+	portalKey := string(msg.Portal.PortalKey.ID) + "|" + string(msg.Portal.PortalKey.Receiver)
+
+	// Session TTL rotation: if the session has been idle longer than the
+	// configured TTL, start a fresh session. The agent's memory files
+	// (SOUL.md, MEMORY.md) are injected every session, so only the
+	// immediate conversation thread is lost.
+	ttl := dmc.Main.Config.SessionIdleTTL
+	if ttl > 0 && meta.IsSessionExpired(portalKey, ttl) {
+		log.Info().
+			Dur("ttl", ttl).
+			Str("portal_key", portalKey).
+			Msg("Session idle TTL exceeded — rotating to fresh session")
+		meta.ClearSession(portalKey)
+	}
+
 	// Use existing session ID if available, or empty to let WordPress create one.
-	sessionID := dmc.getPortalSessionID(msg.Portal)
+	sessionID := meta.SessionIDForPortal(portalKey)
 
 	sendResp, err := dmc.SendMessage(ctx, text, sessionID)
 	if err != nil {
+		dmc.setAgentTyping(ctx, msg.Portal, false)
 		return nil, err
 	}
 
-	// Save the session ID from the response for subsequent messages.
+	// Save the session ID and touch the last-message timestamp.
 	if sendResp.SessionID != "" {
-		meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
-		portalKey := string(msg.Portal.PortalKey.ID) + "|" + string(msg.Portal.PortalKey.Receiver)
 		meta.RememberSessionID(portalKey, sendResp.SessionID)
+		meta.TouchPortal(portalKey)
 		if err := dmc.UserLogin.Save(ctx); err != nil {
 			log.Warn().Err(err).Msg("Failed to save session ID")
 		}
@@ -371,6 +393,10 @@ func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *brid
 		}
 	}
 
+	// Typing stops automatically when the agent sends a message,
+	// but clear it explicitly in case of empty responses.
+	dmc.setAgentTyping(ctx, msg.Portal, false)
+
 	msgID := networkid.MessageID(sendResp.MessageID)
 	if msgID == "" {
 		msgID = networkid.MessageID(msg.Event.ID)
@@ -392,6 +418,41 @@ func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *brid
 	}
 
 	return &bridgev2.MatrixMessageResponse{DB: &database.Message{ID: msgID}}, nil
+}
+
+// setAgentTyping sets the typing indicator on the agent ghost in a portal room.
+// When typing is true, the user sees "Roadie is typing..." in their client.
+func (dmc *DataMachineClient) setAgentTyping(ctx context.Context, portal *bridgev2.Portal, typing bool) {
+	if portal.MXID == "" {
+		return
+	}
+
+	agentUserID := networkid.UserID(dmc.agentSlug + "@" + hostFromURL(dmc.siteURL))
+	ghost, err := dmc.Main.br.GetGhostByID(ctx, agentUserID)
+	if err != nil || ghost == nil || ghost.Intent == nil {
+		zerolog.Ctx(ctx).Debug().Err(err).Msg("Could not get agent ghost for typing indicator")
+		return
+	}
+
+	var timeout time.Duration
+	if typing {
+		// Set a generous timeout — the typing indicator auto-cancels when
+		// the agent sends a message, but this covers tool-calling delays.
+		timeout = 120 * time.Second
+	}
+
+	if err := ghost.Intent.MarkTyping(ctx, portal.MXID, bridgev2.TypingTypeText, timeout); err != nil {
+		zerolog.Ctx(ctx).Debug().Err(err).Bool("typing", typing).Msg("Failed to set typing indicator")
+	}
+}
+
+// HandleMatrixReadReceipt handles read receipts from the user.
+// Currently a no-op on the WordPress side, but satisfies the interface
+// so the bridge framework processes receipts properly.
+func (dmc *DataMachineClient) HandleMatrixReadReceipt(ctx context.Context, msg *bridgev2.MatrixReadReceipt) error {
+	// Nothing to report to WordPress — read receipts are client-side only.
+	// The framework handles the Matrix-side read receipt automatically.
+	return nil
 }
 
 // SendMessage sends a user message via the bridge /send endpoint.
@@ -674,15 +735,6 @@ func (dmc *DataMachineClient) AckPendingMessages(ctx context.Context, ids []stri
 		return fmt.Errorf("ack returned %d: %s", resp.StatusCode, string(respBody))
 	}
 	return nil
-}
-
-func (dmc *DataMachineClient) getPortalSessionID(portal *bridgev2.Portal) string {
-	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
-	portalKey := string(portal.PortalKey.ID) + "|" + string(portal.PortalKey.Receiver)
-	if portalKey == "" {
-		portalKey = string(portal.ID)
-	}
-	return meta.SessionIDForPortal(portalKey)
 }
 
 func (dmc *DataMachineClient) deliverPendingMessage(ctx context.Context, msg PendingMessage) {

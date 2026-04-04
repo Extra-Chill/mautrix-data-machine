@@ -28,3 +28,10 @@ callback_port: 29340
 # Override the network display name shown in Beeper's sidebar.
 # If empty, uses the site_name from WordPress onboarding metadata, or "Data Machine" as fallback.
 network_display_name: ""
+
+# How long a chat session can be idle before the bridge starts a fresh one.
+# The agent's memory files (SOUL.md, MEMORY.md) persist across sessions,
+# so the agent still "remembers" the user — only the immediate conversation resets.
+# Set to 0 to disable auto-rotation (sessions persist forever).
+# Default: 24h.
+session_idle_ttl: 24h

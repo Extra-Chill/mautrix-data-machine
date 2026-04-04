@@ -1,0 +1,34 @@
+# Matrix homeserver URL.
+homeserver_url: "https://matrix.example.com"
+
+# Matrix user ID for the bot account.
+user_id: "@agent:example.com"
+
+# Access token for the bot account (preferred over password).
+access_token: ""
+
+# Password for the bot account (used if access_token is empty).
+password: ""
+
+# WordPress site URL where the Data Machine agent lives.
+site_url: "https://example.com"
+
+# Agent slug on the WordPress site.
+agent_slug: "assistant"
+
+# Agent bearer token from WordPress (Data Machine bridge token).
+agent_token: ""
+
+# How long a chat session can be idle before rotating to a fresh one.
+# The agent's memory files persist across sessions.
+# Set to 0 to disable auto-rotation.
+session_idle_ttl: 24h
+
+# Timeout for HTTP requests to the WordPress site.
+request_timeout: 120s
+
+# Pickle key for the E2EE crypto store. Can be any string.
+pickle_key: ""
+
+# Path to the SQLite database for the crypto store.
+database_path: "./bot-crypto.db"

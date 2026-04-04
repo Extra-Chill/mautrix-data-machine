@@ -94,32 +94,9 @@ func (b *Bot) Run(ctx context.Context) error {
 	client.Log = b.Log.With().Str("component", "mautrix").Logger()
 	b.Client = client
 
-	// Login if we don't have an access token yet.
-	if b.Config.AccessToken == "" {
-		if b.Config.Password == "" {
-			return fmt.Errorf("either access_token or password is required")
-		}
-		b.Log.Info().Str("user_id", b.Config.UserID).Msg("Logging in with password")
-		resp, err := client.Login(ctx, &mautrix.ReqLogin{
-			Type: mautrix.AuthTypePassword,
-			Identifier: mautrix.UserIdentifier{
-				Type: mautrix.IdentifierTypeUser,
-				User: b.Config.UserID,
-			},
-			Password:                 b.Config.Password,
-			InitialDeviceDisplayName: "Data Machine Bot",
-			StoreCredentials:         true,
-			StoreHomeserverURL:       true,
-		})
-		if err != nil {
-			return fmt.Errorf("login failed: %w", err)
-		}
-		b.Log.Info().
-			Str("device_id", resp.DeviceID.String()).
-			Msg("Login successful")
-	}
-
-	// Set up E2EE via cryptohelper.
+	// Set up E2EE via cryptohelper. The crypto helper handles login
+	// internally — we always provide LoginAs credentials so it can
+	// create/refresh device sessions as needed.
 	pickleKey := []byte(b.Config.PickleKey)
 	if len(pickleKey) == 0 {
 		pickleKey = []byte("mautrix-datamachine-bot")
@@ -128,8 +105,10 @@ func (b *Bot) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create crypto helper: %w", err)
 	}
-	// If we logged in with password above, LoginAs lets the crypto helper
-	// re-use/refresh credentials automatically.
+
+	// Always provide LoginAs so cryptohelper can manage the session.
+	// If an access_token is configured, the client is already authenticated
+	// but cryptohelper may still need to create a device for E2EE.
 	if b.Config.Password != "" {
 		cryptoHelper.LoginAs = &mautrix.ReqLogin{
 			Type: mautrix.AuthTypePassword,
@@ -137,8 +116,24 @@ func (b *Bot) Run(ctx context.Context) error {
 				Type: mautrix.IdentifierTypeUser,
 				User: b.Config.UserID,
 			},
-			Password: b.Config.Password,
+			Password:                 b.Config.Password,
+			InitialDeviceDisplayName: "Data Machine Bot",
 		}
+	} else if b.Config.AccessToken != "" {
+		// When using access_token only, cryptohelper needs the token set
+		// on the client (already done above via NewClient). We also need
+		// to resolve the device ID by calling /whoami.
+		whoami, err := client.Whoami(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to verify access token via /whoami: %w", err)
+		}
+		client.DeviceID = whoami.DeviceID
+		b.Log.Info().
+			Str("user_id", whoami.UserID.String()).
+			Str("device_id", whoami.DeviceID.String()).
+			Msg("Access token verified")
+	} else {
+		return fmt.Errorf("either access_token or password is required")
 	}
 
 	if err := cryptoHelper.Init(ctx); err != nil {

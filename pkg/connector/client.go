@@ -339,6 +339,36 @@ func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *brid
 	meta := dmc.UserLogin.Metadata.(*UserLoginMeta)
 	portalKey := string(msg.Portal.PortalKey.ID) + "|" + string(msg.Portal.PortalKey.Receiver)
 
+	// Manual session reset: if the user types a reset command, clear the
+	// session and confirm without forwarding to WordPress.
+	if isResetCommand(text) {
+		hadSession := meta.SessionIDForPortal(portalKey) != ""
+		meta.ClearSession(portalKey)
+		if err := dmc.UserLogin.Save(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to save after session reset")
+		}
+		dmc.setAgentTyping(ctx, msg.Portal, false)
+
+		confirmText := "Session reset! Your next message will start a fresh conversation."
+		if !hadSession {
+			confirmText = "No active session to reset. Your next message will start a new conversation."
+		}
+		confirmEvent := &DataMachineRemoteMessage{
+			portalKey: msg.Portal.PortalKey,
+			id:        networkid.MessageID("reset-" + msg.Event.ID.String()),
+			text:      confirmText,
+			agentSlug: dmc.agentSlug,
+			timestamp: time.Now(),
+			sender:    EventSenderForAgent(dmc.agentSlug, dmc),
+		}
+		dmc.Main.br.QueueRemoteEvent(dmc.UserLogin, confirmEvent)
+		log.Info().Bool("had_session", hadSession).Msg("User requested session reset")
+
+		return &bridgev2.MatrixMessageResponse{
+			DB: &database.Message{ID: networkid.MessageID(msg.Event.ID)},
+		}, nil
+	}
+
 	// Session TTL rotation: if the session has been idle longer than the
 	// configured TTL, start a fresh session. The agent's memory files
 	// (SOUL.md, MEMORY.md) are injected every session, so only the
@@ -767,6 +797,17 @@ func (dmc *DataMachineClient) sendWelcomeMessage(ctx context.Context, portal *br
 
 	dmc.Main.br.QueueRemoteEvent(dmc.UserLogin, welcomeEvent)
 	log.Debug().Msg("Sent welcome message to portal room")
+}
+
+// isResetCommand checks if a message is a session reset command.
+// Recognized commands: "reset", "/reset", "new session", "new chat".
+func isResetCommand(text string) bool {
+	normalized := strings.TrimSpace(strings.ToLower(text))
+	switch normalized {
+	case "reset", "/reset", "new session", "new chat":
+		return true
+	}
+	return false
 }
 
 func ptrStr(s string) *string { return &s }

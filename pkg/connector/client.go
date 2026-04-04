@@ -799,15 +799,9 @@ func (dmc *DataMachineClient) sendWelcomeMessage(ctx context.Context, portal *br
 	log.Debug().Msg("Sent welcome message to portal room")
 }
 
-// isResetCommand checks if a message is a session reset command.
-// Recognized commands: "reset", "/reset", "new session", "new chat".
+// isResetCommand checks if a message is the /reset slash command.
 func isResetCommand(text string) bool {
-	normalized := strings.TrimSpace(strings.ToLower(text))
-	switch normalized {
-	case "reset", "/reset", "new session", "new chat":
-		return true
-	}
-	return false
+	return strings.TrimSpace(strings.ToLower(text)) == "/reset"
 }
 
 func ptrStr(s string) *string { return &s }

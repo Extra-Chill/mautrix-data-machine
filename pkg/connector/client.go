@@ -799,9 +799,9 @@ func (dmc *DataMachineClient) sendWelcomeMessage(ctx context.Context, portal *br
 	log.Debug().Msg("Sent welcome message to portal room")
 }
 
-// isResetCommand checks if a message is the /reset slash command.
+// isResetCommand checks if a message is the /new slash command.
 func isResetCommand(text string) bool {
-	return strings.TrimSpace(strings.ToLower(text)) == "/reset"
+	return strings.TrimSpace(strings.ToLower(text)) == "/new"
 }
 
 func ptrStr(s string) *string { return &s }

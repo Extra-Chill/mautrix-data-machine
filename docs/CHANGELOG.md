@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.4.0] - 2026-04-04
+
+### Added
+- add typing indicators, session TTL rotation, and read receipts
+
 ## [0.3.0] - 2026-04-03
 
 ### Added

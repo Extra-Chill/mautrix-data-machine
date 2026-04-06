@@ -37,9 +37,9 @@ type BotCallbackServer struct {
 	server   *http.Server
 	listener net.Listener
 
-	mu       sync.Mutex
-	logins   map[string]*pendingLogin // state → pending login
-	started  bool
+	mu      sync.Mutex
+	logins  map[string]*pendingLogin // state → pending login
+	started bool
 }
 
 // newBotCallbackServer creates a callback server bound to the bot.
@@ -387,5 +387,3 @@ func botCallbackPage(success bool, callbackError string) string {
 </body>
 </html>`, title, title, body))
 }
-
-

@@ -94,14 +94,16 @@ type DataMachineRemoteMessage struct {
 var _ bridgev2.RemoteMessage = (*DataMachineRemoteMessage)(nil)
 var _ bridgev2.RemoteEventWithTimestamp = (*DataMachineRemoteMessage)(nil)
 
-func (m *DataMachineRemoteMessage) GetType() bridgev2.RemoteEventType { return bridgev2.RemoteEventMessage }
+func (m *DataMachineRemoteMessage) GetType() bridgev2.RemoteEventType {
+	return bridgev2.RemoteEventMessage
+}
 func (m *DataMachineRemoteMessage) GetPortalKey() networkid.PortalKey { return m.portalKey }
 func (m *DataMachineRemoteMessage) AddLogContext(c zerolog.Context) zerolog.Context {
 	return c.Str("message_id", string(m.id)).Str("agent", m.agentSlug)
 }
 func (m *DataMachineRemoteMessage) GetSender() bridgev2.EventSender { return m.sender }
-func (m *DataMachineRemoteMessage) GetID() networkid.MessageID       { return m.id }
-func (m *DataMachineRemoteMessage) GetTimestamp() time.Time          { return m.timestamp }
+func (m *DataMachineRemoteMessage) GetID() networkid.MessageID      { return m.id }
+func (m *DataMachineRemoteMessage) GetTimestamp() time.Time         { return m.timestamp }
 func (m *DataMachineRemoteMessage) ConvertMessage(_ context.Context, _ *bridgev2.Portal, _ bridgev2.MatrixAPI) (*bridgev2.ConvertedMessage, error) {
 	// Render markdown to HTML for rich display in Matrix/Beeper clients.
 	content := format.RenderMarkdown(m.text, true, false)

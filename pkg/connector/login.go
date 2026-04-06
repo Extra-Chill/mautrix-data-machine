@@ -62,8 +62,8 @@ func (d *DataMachineLogin) Start(ctx context.Context) (*bridgev2.LoginStep, erro
 
 	// No default configured — ask the user for the site URL.
 	return &bridgev2.LoginStep{
-		Type:   bridgev2.LoginStepTypeUserInput,
-		StepID: LoginStepIDSiteURL,
+		Type:         bridgev2.LoginStepTypeUserInput,
+		StepID:       LoginStepIDSiteURL,
 		Instructions: "Enter the WordPress site URL where the agent is available.",
 		UserInputParams: &bridgev2.LoginUserInputParams{
 			Fields: []bridgev2.LoginInputDataField{{

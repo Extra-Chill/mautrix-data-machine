@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0] - 2026-04-06
+
+### Added
+- add per-user PKCE auth for bot mode
+- add Matrix bot mode and extract shared WordPress API client
+- add manual session reset command
+
+### Changed
+- fix gofmt alignment in pkce.go, login.go, poller.go
+
+### Fixed
+- use /whoami to resolve device ID when using access_token
+- use /new as the session reset command
+- limit reset command to /reset only
+
 ## [0.4.0] - 2026-04-04
 
 ### Added

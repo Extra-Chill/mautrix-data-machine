@@ -9,6 +9,8 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
 	"maunium.net/go/mautrix/id"
+
+	"go.mau.fi/mautrix-datamachine/pkg/wordpress"
 )
 
 // registerHandlers sets up the Matrix event handlers on the syncer.
@@ -54,12 +56,35 @@ func (b *Bot) registerHandlers() {
 // handleMessage processes an incoming DM message.
 func (b *Bot) handleMessage(ctx context.Context, evt *event.Event, text string) {
 	roomID := evt.RoomID
+	senderID := evt.Sender.String()
 	portalKey := roomID.String()
 
 	log := b.Log.With().
 		Str("room_id", roomID.String()).
-		Str("sender", evt.Sender.String()).
+		Str("sender", senderID).
 		Logger()
+
+	// Logout command — clear stored token.
+	if isLogoutCommand(text) {
+		if err := b.UserAuth.DeleteToken(senderID); err != nil {
+			log.Err(err).Msg("Failed to delete user token")
+		}
+		b.Sessions.ClearSession(portalKey)
+		b.sendTextMessage(ctx, roomID, "You've been disconnected. Send any message to sign in again.")
+		log.Info().Msg("User logged out")
+		return
+	}
+
+	// Resolve per-user agent token.
+	wpClient, err := b.resolveUserClient(ctx, senderID, roomID)
+	if err != nil {
+		log.Err(err).Msg("Failed to resolve user client")
+		return
+	}
+	if wpClient == nil {
+		// Auth flow was started; message to user already sent.
+		return
+	}
 
 	// Manual session reset.
 	if isResetCommand(text) {
@@ -88,11 +113,19 @@ func (b *Bot) handleMessage(ctx context.Context, evt *event.Event, text string) 
 	// Set typing indicator.
 	_, _ = b.Client.UserTyping(ctx, roomID, true, 120*time.Second)
 
-	sendResp, err := b.WP.SendMessage(ctx, text, sessionID)
+	sendResp, err := wpClient.SendMessage(ctx, text, sessionID)
 	if err != nil {
 		_, _ = b.Client.UserTyping(ctx, roomID, false, 0)
 		log.Err(err).Msg("Failed to send message to WordPress")
-		b.sendTextMessage(ctx, roomID, "Sorry, something went wrong processing your message.")
+
+		// If the token was rejected, clear it so the user re-authenticates.
+		if isAuthError(err) {
+			log.Warn().Msg("Token appears invalid, clearing stored credentials")
+			_ = b.UserAuth.DeleteToken(senderID)
+			b.sendTextMessage(ctx, roomID, "Your session has expired. Send any message to sign in again.")
+		} else {
+			b.sendTextMessage(ctx, roomID, "Sorry, something went wrong processing your message.")
+		}
 		return
 	}
 
@@ -106,7 +139,7 @@ func (b *Bot) handleMessage(ctx context.Context, evt *event.Event, text string) 
 	const maxContinueTurns = 20
 	for turn := 0; !sendResp.Completed && sendResp.SessionID != "" && turn < maxContinueTurns; turn++ {
 		log.Debug().Int("turn", turn+1).Str("session_id", sendResp.SessionID).Msg("AI not complete, continuing")
-		contResp, contErr := b.WP.ContinueChat(ctx, sendResp.SessionID)
+		contResp, contErr := wpClient.ContinueChat(ctx, sendResp.SessionID)
 		if contErr != nil {
 			log.Err(contErr).Msg("Failed to continue chat")
 			break
@@ -128,6 +161,41 @@ func (b *Bot) handleMessage(ctx context.Context, evt *event.Event, text string) 
 		b.sendMarkdownMessage(ctx, roomID, sendResp.Response)
 		log.Info().Msg("Sent AI response")
 	}
+}
+
+// resolveUserClient returns a per-user WordPress client if the user is authenticated.
+// If the user has no stored token, it starts the PKCE auth flow and returns nil.
+// Falls back to the global agent token if per-user auth is not available.
+func (b *Bot) resolveUserClient(ctx context.Context, matrixUserID string, roomID id.RoomID) (*wordpress.WordPressClient, error) {
+	// Try per-user token first.
+	token, err := b.UserAuth.GetToken(matrixUserID)
+	if err != nil {
+		return nil, err
+	}
+
+	if token != "" {
+		return wordpress.NewWordPressClient(
+			b.Config.SiteURL,
+			b.Config.AgentSlug,
+			token,
+			b.Config.RequestTimeout,
+		), nil
+	}
+
+	// No per-user token. If callback server is available, start PKCE flow.
+	if b.Callback != nil && b.Config.CallbackURL != "" {
+		b.StartAuthFlow(ctx, matrixUserID, roomID)
+		return nil, nil
+	}
+
+	// No callback server — fall back to global token if available.
+	if b.Config.AgentToken != "" {
+		return b.WP, nil
+	}
+
+	// No auth method available at all.
+	b.sendTextMessage(ctx, roomID, "Authentication is required but not configured. Contact the administrator.")
+	return nil, nil
 }
 
 // sendTextMessage sends a plain text message to a room.
@@ -155,4 +223,19 @@ func (b *Bot) sendMarkdownMessage(ctx context.Context, roomID id.RoomID, text st
 // isResetCommand checks if a message is the /new slash command.
 func isResetCommand(text string) bool {
 	return strings.TrimSpace(strings.ToLower(text)) == "/new"
+}
+
+// isLogoutCommand checks if a message is the /logout slash command.
+func isLogoutCommand(text string) bool {
+	return strings.TrimSpace(strings.ToLower(text)) == "/logout"
+}
+
+// isAuthError checks if an error looks like an authentication/authorization failure.
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "401") || strings.Contains(msg, "403") ||
+		strings.Contains(msg, "Unauthorized") || strings.Contains(msg, "Forbidden")
 }

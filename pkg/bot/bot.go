@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -20,6 +21,8 @@ type Bot struct {
 	CryptoHelper *cryptohelper.CryptoHelper
 	WP           *wordpress.WordPressClient
 	Sessions     *wordpress.SessionStore
+	UserAuth     *UserAuth
+	Callback     *BotCallbackServer
 	Config       BotConfig
 	Log          zerolog.Logger
 }
@@ -37,6 +40,11 @@ type BotConfig struct {
 	RequestTimeout time.Duration `yaml:"request_timeout"`
 	PickleKey      string        `yaml:"pickle_key"`
 	DatabasePath   string        `yaml:"database_path"`
+
+	// Per-user PKCE auth fields.
+	CallbackURL      string `yaml:"callback_url"`
+	CallbackPort     int    `yaml:"callback_port"`
+	AuthDatabasePath string `yaml:"auth_database_path"`
 }
 
 // Run starts the bot: logs in, sets up E2EE, registers handlers, and syncs.
@@ -45,8 +53,8 @@ func (b *Bot) Run(ctx context.Context) error {
 	if b.Config.HomeserverURL == "" || b.Config.UserID == "" {
 		return fmt.Errorf("homeserver_url and user_id are required")
 	}
-	if b.Config.SiteURL == "" || b.Config.AgentToken == "" {
-		return fmt.Errorf("site_url and agent_token are required")
+	if b.Config.SiteURL == "" {
+		return fmt.Errorf("site_url is required")
 	}
 
 	// Defaults.
@@ -59,11 +67,15 @@ func (b *Bot) Run(ctx context.Context) error {
 	if b.Config.DatabasePath == "" {
 		b.Config.DatabasePath = "./bot-crypto.db"
 	}
+	if b.Config.CallbackPort == 0 {
+		b.Config.CallbackPort = 29340
+	}
 
 	b.Log = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
 		With().Timestamp().Str("component", "bot").Logger()
 
-	// Create WordPress client.
+	// Create WordPress client. If agent_token is set, use it as the default
+	// (for onboarding/identity calls). Per-user tokens override this for messages.
 	b.WP = wordpress.NewWordPressClient(
 		b.Config.SiteURL,
 		b.Config.AgentSlug,
@@ -72,23 +84,52 @@ func (b *Bot) Run(ctx context.Context) error {
 	)
 	b.Sessions = wordpress.NewSessionStore()
 
-	// Validate agent token before starting the sync loop.
-	ident, err := b.WP.GetIdentity(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to validate agent token: %w", err)
+	// If a global agent token is set, validate it at startup.
+	if b.Config.AgentToken != "" {
+		ident, err := b.WP.GetIdentity(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to validate agent token: %w", err)
+		}
+		if ident.Data != nil && ident.Data.AgentSlug != "" {
+			b.WP.AgentSlug = ident.Data.AgentSlug
+			b.Log.Info().
+				Str("agent", ident.Data.AgentSlug).
+				Str("site", ident.Data.SiteName).
+				Msg("Agent identity confirmed (global token)")
+		}
+	} else {
+		b.Log.Info().Msg("No global agent_token configured; per-user auth required")
 	}
-	if ident.Data != nil && ident.Data.AgentSlug != "" {
-		b.WP.AgentSlug = ident.Data.AgentSlug
-		b.Log.Info().
-			Str("agent", ident.Data.AgentSlug).
-			Str("site", ident.Data.SiteName).
-			Msg("Agent identity confirmed")
+
+	// Initialize per-user auth database.
+	authDBPath := b.Config.AuthDatabasePath
+	if authDBPath == "" {
+		// Default: same directory as the crypto database.
+		authDBPath = filepath.Join(filepath.Dir(b.Config.DatabasePath), "bot-auth.db")
+	}
+	userAuth, err := NewUserAuth(authDBPath)
+	if err != nil {
+		return fmt.Errorf("failed to init user auth database: %w", err)
+	}
+	b.UserAuth = userAuth
+	b.Log.Info().Str("path", authDBPath).Msg("User auth database initialized")
+
+	// Start the PKCE callback server.
+	if b.Config.CallbackURL != "" {
+		b.Callback = newBotCallbackServer(b)
+		if err := b.Callback.Start(ctx); err != nil {
+			userAuth.Close()
+			return fmt.Errorf("failed to start callback server: %w", err)
+		}
+	} else {
+		b.Log.Warn().Msg("No callback_url configured; per-user PKCE auth will not work")
 	}
 
 	// Create mautrix client.
 	userID := id.UserID(b.Config.UserID)
 	client, err := mautrix.NewClient(b.Config.HomeserverURL, userID, b.Config.AccessToken)
 	if err != nil {
+		userAuth.Close()
 		return fmt.Errorf("failed to create Matrix client: %w", err)
 	}
 	client.Log = b.Log.With().Str("component", "mautrix").Logger()
@@ -103,6 +144,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	}
 	cryptoHelper, err := cryptohelper.NewCryptoHelper(client, pickleKey, b.Config.DatabasePath)
 	if err != nil {
+		userAuth.Close()
 		return fmt.Errorf("failed to create crypto helper: %w", err)
 	}
 
@@ -125,6 +167,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		// to resolve the device ID by calling /whoami.
 		whoami, err := client.Whoami(ctx)
 		if err != nil {
+			userAuth.Close()
 			return fmt.Errorf("failed to verify access token via /whoami: %w", err)
 		}
 		client.DeviceID = whoami.DeviceID
@@ -133,10 +176,12 @@ func (b *Bot) Run(ctx context.Context) error {
 			Str("device_id", whoami.DeviceID.String()).
 			Msg("Access token verified")
 	} else {
+		userAuth.Close()
 		return fmt.Errorf("either access_token or password is required")
 	}
 
 	if err := cryptoHelper.Init(ctx); err != nil {
+		userAuth.Close()
 		return fmt.Errorf("failed to init crypto helper: %w", err)
 	}
 	b.CryptoHelper = cryptoHelper
@@ -158,9 +203,11 @@ func (b *Bot) Run(ctx context.Context) error {
 		b.Log.Info().Msg("Context cancelled, stopping bot")
 		client.StopSync()
 		_ = cryptoHelper.Close()
+		_ = userAuth.Close()
 		return nil
 	case err := <-syncErr:
 		_ = cryptoHelper.Close()
+		_ = userAuth.Close()
 		if err != nil {
 			return fmt.Errorf("sync failed: %w", err)
 		}

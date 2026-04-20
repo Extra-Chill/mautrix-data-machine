@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0] - 2026-04-20
+
+### Added
+- forward Matrix `m.image` events through the bridge: download (E2EE-safe), upload to WP Media Library via `/wp/v2/media`, call `/bridge/send` with `attachments` so downstream socials chat tools (`publish_instagram` etc.) can consume public image URLs.
+- `media:` config section (`enabled`, `max_bytes`, `allowed_mime_types`, `download_timeout`, `upload_timeout`) with sane defaults matching Instagram Graph API limits.
+- `bridge_app` / `bridge_room` / `bridge_room_kind` context on `/bridge/send` so the agent's bridge-mode guidance can adapt per room.
+- shared `runChatTurn()` entry point so text and image paths converge on one session/tool-call loop.
+
+### Changed
+- `WordPressClient.SendMessage()` signature now accepts `attachments []Attachment` and `*BridgeContext`. Only caller inside this repo (`pkg/bot/handlers.go`) updated; `pkg/connector` is unaffected.
+- `registerHandlers()` now dispatches by `MsgType` (text/emote/notice → text path, image → new image path, others silently ignored) instead of gating only on empty body.
+
 ## [0.5.0] - 2026-04-06
 
 ### Added

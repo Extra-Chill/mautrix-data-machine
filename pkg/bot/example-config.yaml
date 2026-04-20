@@ -48,3 +48,28 @@ callback_port: 29340
 # Path to the SQLite database for per-user auth tokens.
 # Defaults to bot-auth.db in the same directory as database_path.
 auth_database_path: ""
+
+# ── Media forwarding ───────────────────────────────────────────────
+# Controls how inbound Matrix m.image events are forwarded to the
+# WordPress site (Media Library upload → /bridge/send attachments →
+# ChatOrchestrator multimodal). Disable this if you don't want the
+# bot to upload user-sent images.
+media:
+  # Set to false to silently drop m.image events.
+  enabled: true
+
+  # Hard cap on a single image upload (bytes). 8 MB matches Instagram
+  # Graph API's feed image limit.
+  max_bytes: 8388608
+
+  # Mime types the bot will upload. Anything else is rejected with a
+  # user-facing error. Keep in sync with Instagram Graph API's supported
+  # set if you care about that downstream publish path.
+  allowed_mime_types:
+    - image/jpeg
+    - image/png
+    - image/webp
+
+  # Per-operation timeouts.
+  download_timeout: 30s
+  upload_timeout: 60s

@@ -11,6 +11,39 @@ type SendResponse struct {
 	Completed bool   `json:"completed"`
 }
 
+// Attachment mirrors one entry in the /bridge/send `attachments` array,
+// which in turn mirrors the /datamachine/v1/chat schema consumed by
+// Data Machine's ChatOrchestrator.
+//
+// Each attachment must carry at least one of URL or MediaID. The
+// Extra Chill PHP side drops items missing both.
+type Attachment struct {
+	URL      string `json:"url,omitempty"`
+	MediaID  int64  `json:"media_id,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	Filename string `json:"filename,omitempty"`
+}
+
+// BridgeContext is optional per-room metadata forwarded to /bridge/send
+// so the Data Machine agent's bridge-mode guidance can adapt its tone
+// and tool suggestions to the upstream app (iMessage vs WhatsApp vs
+// Signal etc.) and conversation shape (dm/group/channel).
+type BridgeContext struct {
+	App      string `json:"bridge_app,omitempty"`
+	Room     string `json:"bridge_room,omitempty"`
+	RoomKind string `json:"bridge_room_kind,omitempty"`
+}
+
+// MediaUploadResponse is a subset of the WP REST /wp/v2/media response.
+// We only need the attachment ID, the canonical public URL, and the
+// server-computed mime type — everything else (title, rendered HTML,
+// EXIF metadata etc.) is not required for forwarding to /bridge/send.
+type MediaUploadResponse struct {
+	ID        int64  `json:"id"`
+	SourceURL string `json:"source_url"`
+	MimeType  string `json:"mime_type"`
+}
+
 // PendingEnvelope wraps the /datamachine/v1/bridge/pending API response.
 type PendingEnvelope struct {
 	Success  bool             `json:"success"`

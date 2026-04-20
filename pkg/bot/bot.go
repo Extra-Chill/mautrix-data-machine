@@ -45,6 +45,51 @@ type BotConfig struct {
 	CallbackURL      string `yaml:"callback_url"`
 	CallbackPort     int    `yaml:"callback_port"`
 	AuthDatabasePath string `yaml:"auth_database_path"`
+
+	// Media forwarding (m.image events → WP Media Library → /bridge/send).
+	Media MediaConfig `yaml:"media"`
+}
+
+// MediaConfig controls how inbound Matrix media events are forwarded
+// to WordPress. Zero-values fall back to sane defaults (see applyMediaDefaults).
+type MediaConfig struct {
+	// Enabled turns image forwarding on/off entirely. When false,
+	// m.image events are silently dropped (matching historical behavior).
+	Enabled bool `yaml:"enabled"`
+
+	// MaxBytes is the hard cap on a single image upload. Instagram's
+	// Graph API limit is 8 MB for feed images; default matches that.
+	MaxBytes int64 `yaml:"max_bytes"`
+
+	// AllowedMimeTypes is an allowlist; anything else is rejected with
+	// a user-facing error. Defaults to image/jpeg, image/png, image/webp
+	// (the set Instagram Graph API accepts).
+	AllowedMimeTypes []string `yaml:"allowed_mime_types"`
+
+	// DownloadTimeout bounds a single Matrix media download.
+	DownloadTimeout time.Duration `yaml:"download_timeout"`
+
+	// UploadTimeout bounds a single WP /wp/v2/media upload.
+	UploadTimeout time.Duration `yaml:"upload_timeout"`
+}
+
+// applyMediaDefaults fills in zero-value MediaConfig fields with the
+// values we'd want most of the time. Callers can override any field
+// in bot-config.yaml without losing the others.
+func applyMediaDefaults(m *MediaConfig) {
+	if m.MaxBytes == 0 {
+		// 8 MB matches Instagram Graph API's feed image cap.
+		m.MaxBytes = 8 * 1024 * 1024
+	}
+	if len(m.AllowedMimeTypes) == 0 {
+		m.AllowedMimeTypes = []string{"image/jpeg", "image/png", "image/webp"}
+	}
+	if m.DownloadTimeout == 0 {
+		m.DownloadTimeout = 30 * time.Second
+	}
+	if m.UploadTimeout == 0 {
+		m.UploadTimeout = 60 * time.Second
+	}
 }
 
 // Run starts the bot: logs in, sets up E2EE, registers handlers, and syncs.
@@ -70,6 +115,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	if b.Config.CallbackPort == 0 {
 		b.Config.CallbackPort = 29340
 	}
+	applyMediaDefaults(&b.Config.Media)
 
 	b.Log = zerolog.New(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).
 		With().Timestamp().Str("component", "bot").Logger()

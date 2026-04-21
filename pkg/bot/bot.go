@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -25,6 +26,11 @@ type Bot struct {
 	Callback     *BotCallbackServer
 	Config       BotConfig
 	Log          zerolog.Logger
+
+	// roomKindCache memoizes "dm" vs "group" classification per room ID
+	// so deriveRoomKind doesn't hit /joined_members on every message.
+	// Keys are id.RoomID, values are string ("dm" | "group").
+	roomKindCache sync.Map
 }
 
 // BotConfig holds all configuration for bot mode.

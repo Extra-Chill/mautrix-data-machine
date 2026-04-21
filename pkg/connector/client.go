@@ -40,6 +40,51 @@ type DataMachineClient struct {
 	stopOnce   sync.Once
 }
 
+// BridgeContext carries per-room metadata forwarded to /bridge/send so
+// the Data Machine agent's bridge-mode guidance can adapt to the
+// environment (DM vs group, upstream transport).
+//
+// Mirrors wordpress.BridgeContext in the sibling package. The types are
+// kept separate because the connector does not import pkg/wordpress —
+// that duplication is pre-existing and intentional for now.
+type BridgeContext struct {
+	App      string `json:"bridge_app,omitempty"`
+	Room     string `json:"bridge_room,omitempty"`
+	RoomKind string `json:"bridge_room_kind,omitempty"`
+}
+
+// deriveBridgeContextFromPortal builds a BridgeContext from a bridgev2
+// Portal. The connector's role is to expose the Data Machine agent as
+// a Matrix-style network, so bridge_app is always "matrix" — the bot's
+// transport layer. The connector does NOT bridge to WhatsApp/Discord/
+// iMessage; those are sibling bridges that Beeper runs separately and
+// forwards into Matrix rooms. Our connector has no clean API to
+// introspect which sibling bridge originated a relayed message; see
+// Extra-Chill/mautrix-data-machine#10 for the follow-up hook.
+//
+// Room kind is derived from the bridgev2 database RoomType field which
+// is already populated by the framework at portal-creation time.
+// RoomTypeDM and RoomTypeGroupDM both map to "dm"; everything else
+// maps to "group". Spaces and unknown types are classified as "group"
+// so the receiving agent falls back to conservative guidance.
+func deriveBridgeContextFromPortal(portal *bridgev2.Portal) *BridgeContext {
+	if portal == nil {
+		return nil
+	}
+
+	roomKind := "group"
+	switch portal.RoomType {
+	case database.RoomTypeDM, database.RoomTypeGroupDM:
+		roomKind = "dm"
+	}
+
+	return &BridgeContext{
+		App:      "matrix",
+		Room:     string(portal.MXID),
+		RoomKind: roomKind,
+	}
+}
+
 var (
 	_ bridgev2.NetworkAPI                    = (*DataMachineClient)(nil)
 	_ bridgev2.ReadReceiptHandlingNetworkAPI = (*DataMachineClient)(nil)
@@ -385,7 +430,8 @@ func (dmc *DataMachineClient) HandleMatrixMessage(ctx context.Context, msg *brid
 	// Use existing session ID if available, or empty to let WordPress create one.
 	sessionID := meta.SessionIDForPortal(portalKey)
 
-	sendResp, err := dmc.SendMessage(ctx, text, sessionID)
+	bridgeCtx := deriveBridgeContextFromPortal(msg.Portal)
+	sendResp, err := dmc.SendMessage(ctx, text, sessionID, bridgeCtx)
 	if err != nil {
 		dmc.setAgentTyping(ctx, msg.Portal, false)
 		return nil, err
@@ -489,12 +535,28 @@ func (dmc *DataMachineClient) HandleMatrixReadReceipt(ctx context.Context, msg *
 // This uses the dedicated bridge inbound endpoint instead of the raw /chat API.
 // Uses its own timeout context because the portal event loop context may have
 // a short deadline that doesn't allow for AI conversation time.
-func (dmc *DataMachineClient) SendMessage(ctx context.Context, message, sessionID string) (*SendResponse, error) {
-	payload := map[string]string{
+//
+// bridgeCtx (optional) carries per-room metadata (bridge_app, bridge_room,
+// bridge_room_kind) forwarded to /bridge/send so the agent's bridge-mode
+// guidance can adapt to the environment (DM vs group, upstream transport).
+func (dmc *DataMachineClient) SendMessage(ctx context.Context, message, sessionID string, bridgeCtx *BridgeContext) (*SendResponse, error) {
+	// Use interface{} so we can mix strings and optional struct fields.
+	payload := map[string]interface{}{
 		"message": message,
 	}
 	if sessionID != "" {
 		payload["session_id"] = sessionID
+	}
+	if bridgeCtx != nil {
+		if bridgeCtx.App != "" {
+			payload["bridge_app"] = bridgeCtx.App
+		}
+		if bridgeCtx.Room != "" {
+			payload["bridge_room"] = bridgeCtx.Room
+		}
+		if bridgeCtx.RoomKind != "" {
+			payload["bridge_room_kind"] = bridgeCtx.RoomKind
+		}
 	}
 
 	body, err := json.Marshal(payload)

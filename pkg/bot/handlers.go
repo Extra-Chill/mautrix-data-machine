@@ -301,7 +301,7 @@ func (b *Bot) runChatTurn(
 	// Typing indicator (idempotent if handleImageMessage already set one).
 	_, _ = b.Client.UserTyping(ctx, roomID, true, 120*time.Second)
 
-	bridgeCtx := b.deriveBridgeContext(evt)
+	bridgeCtx := b.deriveBridgeContext(ctx, evt)
 
 	sendResp, err := wpClient.SendMessage(ctx, message, sessionID, attachments, bridgeCtx)
 	if err != nil {
@@ -400,28 +400,69 @@ func (b *Bot) isAllowedMimeType(mime string) bool {
 	return false
 }
 
-// deriveBridgeContext best-effort extracts the upstream app / room /
-// room-kind from a Matrix event. For a mautrix bridge bot sitting in
-// Beeper-forwarded rooms, the canonical signals we have without
-// upstream-specific metadata are:
+// deriveBridgeContext extracts the upstream app / room / room-kind
+// from a Matrix event for forwarding to the Data Machine /bridge/send
+// endpoint. The fields let the PHP-side AgentModeDirective adapt its
+// mode guidance to the environment (DM vs group, upstream network).
 //
-//  1. Bot is always in "bridge" context (bridge_app="matrix")
-//  2. Room kind defaults to "dm" — Beeper DMs are 1:1 rooms; future
-//     work can detect group/channel by room member count.
-//  3. bridge_room is the Matrix room ID (opaque, stable, useful for
-//     DM-side mode guidance).
+// Current derivation:
 //
-// Returns nil when nothing meaningful can be derived (keeps the
-// payload lean for tests / direct Matrix users).
-func (b *Bot) deriveBridgeContext(evt *event.Event) *wordpress.BridgeContext {
+//  1. bridge_app = "matrix" — the bot's transport is Matrix. Users
+//     reaching the bot via Beeper-forwarded bridges (iMessage, WhatsApp,
+//     etc.) will still show up here as "matrix" because we don't yet
+//     inspect ghost-user MXID server parts to infer the upstream
+//     network. See Extra-Chill/mautrix-data-machine#10 for the
+//     follow-up hook.
+//
+//  2. bridge_room = Matrix room ID. Opaque, stable, safe to forward.
+//
+//  3. bridge_room_kind = "dm" when the room has exactly 2 joined
+//     members (the bot + the human), "group" otherwise. Result is
+//     cached per-room in roomKindCache so we don't hit /joined_members
+//     on every message. "channel" derivation is out of scope for v1 —
+//     no reliable heuristic without extra state work.
+//
+// Returns nil when nothing meaningful can be derived (evt is nil).
+func (b *Bot) deriveBridgeContext(ctx context.Context, evt *event.Event) *wordpress.BridgeContext {
 	if evt == nil {
 		return nil
 	}
 	return &wordpress.BridgeContext{
 		App:      "matrix",
 		Room:     evt.RoomID.String(),
-		RoomKind: "dm",
+		RoomKind: b.deriveRoomKind(ctx, evt.RoomID),
 	}
+}
+
+// deriveRoomKind classifies a Matrix room as "dm" or "group" based on
+// joined member count. Results are cached per-room; membership changes
+// would eventually stale the cache, but for the bot's primary use case
+// (1:1 assistant chats) this is acceptable. Call sites that need a
+// fresh read can delete from roomKindCache first.
+//
+// On Matrix API error the fallback is "dm" — the conservative choice
+// for a personal-assistant bot whose primary room shape is 1:1.
+func (b *Bot) deriveRoomKind(ctx context.Context, roomID id.RoomID) string {
+	if roomID == "" {
+		return "dm"
+	}
+
+	// Cache hit: return the memoized value.
+	if kind, ok := b.roomKindCache.Load(roomID); ok {
+		return kind.(string)
+	}
+
+	// Cache miss: resolve via /joined_members.
+	kind := "dm"
+	resp, err := b.Client.JoinedMembers(ctx, roomID)
+	if err != nil {
+		b.Log.Debug().Err(err).Str("room_id", roomID.String()).Msg("Failed to fetch joined members; defaulting room_kind to dm")
+	} else if len(resp.Joined) > 2 {
+		kind = "group"
+	}
+
+	b.roomKindCache.Store(roomID, kind)
+	return kind
 }
 
 // deriveUploadFilename picks a filename for the WP media upload.
